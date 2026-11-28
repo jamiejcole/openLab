@@ -2518,6 +2518,23 @@ final class AppControllerTests: XCTestCase {
         }
         XCTAssertTrue(delegate.validateMenuItem(try transportItem(.previewSelected, items)))
         XCTAssertEqual(list.selectedIDs().count, 2)
+
+        // A group and its child, nothing in it playing: no one file; the edits act on all; Stop, Panic
+        // and Pause of the selection have nothing live. With Intro (playing) added to the group, they act.
+        let (group, child, _) = try await addPreviewGroup()
+        list.selectAsUser([group, child])
+        XCTAssertEqual(Set(list.selectedIDs()), [group, child])
+        XCTAssertFalse(try isOn(#selector(AppDelegate.revealTargetFile(_:)), delegate, items), "a group, no one file")
+        for action in [#selector(AppDelegate.deleteCues(_:)), #selector(AppDelegate.copyCues(_:))] {
+            XCTAssertTrue(try isOn(action, delegate, items), "group: \(action)")
+        }
+        for command in [TransportCommand.stopSelected, .panicSelected] {
+            XCTAssertFalse(delegate.validateMenuItem(try transportItem(command, items)), "group idle: \(command)")
+        }
+        list.selectAsUser([group, intro])
+        for command in [TransportCommand.stopSelected, .panicSelected] {
+            XCTAssertTrue(delegate.validateMenuItem(try transportItem(command, items)), "Intro plays: \(command)")
+        }
     }
 
     /// Flow: unsaved changes and Close -> closing asks to save; the menu's Close and the window's close

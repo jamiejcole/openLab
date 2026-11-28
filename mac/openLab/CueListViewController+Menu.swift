@@ -305,7 +305,7 @@ extension CueListViewController: NSMenuDelegate {
         ["auto_continue", "auto_follow"].contains(cue.raw["continue_mode"]?.stringValue ?? "")
     }
 
-    /// Tools > Reveal Target File in Finder: the file of the one selected cue, as the row menu does.
+    /// Tools > Show Cue’s File in Finder: the file of the one selected cue, as the row menu does.
     @discardableResult
     func revealSelectedTarget() -> Bool {
         guard selectedIDs().count == 1, let id = selectedIDs().last else { return false }
@@ -319,7 +319,7 @@ extension CueListViewController: NSMenuDelegate {
         }
     }
 
-    /// Whether Reveal Target File has a file to show (for the menu item).
+    /// Whether Show Cue’s File has a file to show (for the menu item).
     var canRevealSelectedTarget: Bool {
         // One file at a time: with several cues selected there is no one file to show.
         selectedIDs().count == 1 && selectedIDs().last.flatMap { node($0) }.flatMap { revealURL($0) } != nil

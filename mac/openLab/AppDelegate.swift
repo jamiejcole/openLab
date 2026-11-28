@@ -336,7 +336,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         func find(_ menu: NSMenu) -> NSMenuItem? {
             for item in menu.items {
                 if let sub = item.submenu, let found = find(sub) { return found }
+                // Transport items carry the key map of the workspace that was in front when the menu was
+                // last refreshed, not of the one in front now; that one's own map has already acted, and a
+                // cue hotkey on the same chord must still fire (as `CueTriggers.menuChords` leaves them out).
                 guard !item.keyEquivalent.isEmpty, let action = item.action, responds(to: action),
+                    action != #selector(transportCommand(_:)),
                     item.target == nil || item.target === self,
                     !item.keyEquivalentModifierMask.contains(.function)
                 else { continue }

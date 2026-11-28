@@ -23,7 +23,7 @@ Stack rules (Swift 6, AppKit, macOS 12.0, no SwiftUI/Observation/third-party pac
 - A Save As of a never-saved workspace into a new show folder copies the media, and the copy points the cues at their copies as an edit; registered before the copy is asked for, the app saves again once the copy ends (`saveAgainWhenCopyEnds`) unless the operator sent an edit since the save began (`WorkspaceStore.editsSent`), so the window shows no unsaved mark and a close asks nothing.
 - Menu states (`AppDelegate.validateMenuItem`):
   - Save is on only while the front workspace has a change the file lacks or has no file yet (`AppController.canSaveFrontAgain`); Save As whenever a workspace is in front.
-  - The items that act on the selection (Cut, Copy, Delete, Delete Numbers, Renumber, the movers, the Transport "Selected" items) need a selected cue; Reveal Target File needs exactly one.
+  - The items that act on the selection (Cut, Copy, Delete, Delete Numbers, Renumber, the movers, the Transport "Selected" items) need a selected cue; Show Cue’s File in Finder needs exactly one.
   - Pause All and Resume All, Stop All and the selected Pause or Resume, Stop and Panic items follow the cues' states as the sidebar's buttons do (`WorkspaceStore.anyPlaying`, `anyPaused`, `anyActive`).
   - The Panic item is on while any workspace window is open (the Esc key never waits on a menu state).
   - A Command key of a greyed item of the app's own is taken by the key monitor (`isDisabledMenuChord`, `swallowsDisabledMenuChord`), so the press does nothing and the system does not beep; not with a panel or sheet key, nor while text is edited.
