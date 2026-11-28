@@ -51,6 +51,10 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     var patchEditors: [ModelID: PatchEditorWindowController] = [:]
     /// Whether an opened patch editor is put on screen (a scenario run draws it off screen).
     var presentsEditors = true
+    /// Whether the video settings' modal dialogs (the route editor, a stage's resize dialog) are
+    /// run on screen when opened; the test bundle drives them off screen, where a modal run would
+    /// wait for input that never comes.
+    static var runsDialogs = true
 
     // OSC page (`+Osc`): the access switch, the listening port, its state and this Mac's addresses.
     let oscEnabledCheck = NSButton(checkboxWithTitle: loc("settings.osc.enabled"), target: nil, action: nil)

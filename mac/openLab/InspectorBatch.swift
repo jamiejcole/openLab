@@ -270,12 +270,20 @@ extension InspectorViewController {
             v.soundLabel.textColor = played.count == 1 ? .labelColor : .secondaryLabelColor
         }
         let stages = cues.map { $0.raw["kind"]?["stage"]?.stringValue }
-        // None is the last item; a stage that is gone shows no choice, as for one cue.
+        // A stage that is gone shows no choice, as for one cue.
+        fillStageMenu(model: model)
         let known = Set(model.stages.map(\.id.raw))
         let chosen = stages.map { s in s.map { known.contains($0) ? $0 : "\u{1}" } ?? "" }
-        // The separator matches nothing; none (the last item) matches "".
-        let choices = v.stageIDs.enumerated().map { i, id in i == v.stageIDs.count - 2 ? "\u{2}" : id?.raw ?? "" }
+        // Only a stage's item and none's match: none matches "", the rest nothing.
+        let choices: [String?] = v.stageChoices.map { choice in
+            switch choice {
+            case .none: return ""
+            case .stage(let id): return id.raw
+            default: return "\u{2}"
+            }
+        }
         showChoice(v.stagePopup, choices, chosen, fallback: -1)
+        v.editStageButton.isEnabled = monitoredStage != nil
         if Set(stages).count > 1 { v.stageSizeLabel.stringValue = "" }
         let files = Set(cues.map { $0.raw["kind"]?["media"]?.stringValue ?? "" })
         if files.count > 1 {
