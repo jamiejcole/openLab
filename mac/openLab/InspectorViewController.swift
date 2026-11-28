@@ -51,6 +51,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     private var rateSub: AnyCancellable?
     private var mappingSub: AnyCancellable?
     private var warningsSub: AnyCancellable?
+    private var videoOutputsSub: AnyCancellable?
     var patchReading: Task<Void, Never>?
     var patchReadAgain = false
     /// The patches the last read of their devices was for: the I/O tab reads again only when the
@@ -130,6 +131,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let editPatchButton = NSButton(title: loc("inspector.io.editPatch"), target: nil, action: nil)
     /// Opens the patch editor of a patch (set by the window controller).
     var onEditPatch: ((ModelID) -> Void)?
+    /// Opens a stage's editor, and the workspace settings on the Video page (set by the window
+    /// controller; a Video cue's I/O tab).
+    var onEditStage: ((ModelID) -> Void)?
+    var onOpenVideoSettings: (() -> Void)?
     /// A Video cue's rows of the I/O tab.
     let videoIO = VideoIOControls()
     let geometry = GeometryControls()
@@ -612,6 +617,16 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         // engine's patch warnings (the device not connected) say where the patches play now.
         warningsSub = store.$warnings.removeDuplicates().dropFirst().sink { [weak self] _ in
             MainActor.assumeIsolated { self?.readPatchDevices() }
+        }
+        // A Video cue's stage pop-up names where each stage goes on this Mac: a display chosen or
+        // unplugged changes it (willSet: drawn on the next turn, once the store holds the value).
+        videoOutputsSub = store.$videoOutputs.removeDuplicates().dropFirst().sink { [weak self] _ in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.editCues.contains(where: { $0.kindType == "video" }) else { return }
+                    self.render()
+                }
+            }
         }
         readPatchDevices()
         render()

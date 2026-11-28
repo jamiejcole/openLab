@@ -250,7 +250,7 @@ enum MainMenu {
     }
 
     /// QLab's Tools menu, the parts openLab has: Load to Time (Cmd-T), Renumber (Cmd-R), Delete
-    /// Numbers (Cmd-D), Jump to Targets (Opt-Cmd-J), Reveal Target File in Finder, Find Missing Files (after Reveal, as QLab
+    /// Numbers (Cmd-D), Jump to Targets (Opt-Cmd-J), Show Cue’s File in Finder, Find Missing Files (after it, as QLab
     /// places its file search).
     private static func toolsMenu() -> NSMenu {
         menu(

@@ -2,13 +2,14 @@
 
 import AppKit
 
-/// The output route editor (VID-01; QLab 5 manual p. 233, UI map `window.video-route-editor`), a
-/// sheet on the workspace settings window opened by a route row's Edit: its name, its size with a
-/// button that takes the size of the chosen display, its rotation and scaling (with a line saying
-/// what the scaling does), then the display it is shown on on this machine and that display's
-/// size. OK sends what changed of the route as one undo step and the display as this machine's
-/// choice (no undo step); Cancel sends nothing. A value the route cannot have is refused in the
-/// sheet, which stays up saying why.
+/// The output route editor (VID-01; QLab 5 manual p. 233, UI map `window.video-route-editor.demo`),
+/// a dialog window of its own run modally over the app (not a sheet on the settings window),
+/// opened by a route row's Edit: its name, its size with a button that takes the size of the chosen
+/// display, its rotation (a quarter turn from upright or back swaps the width and height typed) and
+/// scaling (with a line saying what the scaling does), then the display it is shown on on this
+/// machine and that display's size, read only. OK sends what changed of the route as one undo step
+/// and the display as this machine's choice (no undo step); Cancel and Esc send nothing. A value the
+/// route cannot have is refused in the dialog, which stays up saying why.
 @MainActor
 final class RouteEditorController: NSWindowController, NSTextFieldDelegate {
     let store: WorkspaceStore
@@ -66,6 +67,7 @@ final class RouteEditorController: NSWindowController, NSTextFieldDelegate {
         super.init(window: window)
         let content = build(mappingName: entry?.mapping?.name)
         window.contentView = content
+        window.defaultButtonCell = okButton.cell as? NSButtonCell
         fill()
         content.layoutSubtreeIfNeeded()
         window.setContentSize(content.fittingSize)
@@ -101,6 +103,8 @@ final class RouteEditorController: NSWindowController, NSTextFieldDelegate {
             rotationPopup.addItem(withTitle: String(format: loc("routeEditor.degrees"), r))
             rotationPopup.lastItem?.representedObject = r
         }
+        rotationPopup.target = self
+        rotationPopup.action = #selector(rotationChosen)
         scalingPopup.setAX("route-editor-scaling", label: loc("routeEditor.scaling"))
         scalingPopup.target = self
         scalingPopup.action = #selector(scalingChosen)
@@ -160,17 +164,12 @@ final class RouteEditorController: NSWindowController, NSTextFieldDelegate {
         buttons.distribution = .fill
         messageLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         messageLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        // A sheet has no title bar: the title heads it, as the window's would.
-        let heading = NSTextField(labelWithString: loc("routeEditor.title"))
-        heading.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
-        heading.alignment = .center
-        heading.setAX("route-editor-title")
-        let stack = NSStackView(views: [heading, grid, divider, lower, buttons])
+        let stack = NSStackView(views: [grid, divider, lower, buttons])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14
         stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 16, right: 20)
-        for v in [heading, divider, buttons] {
+        for v in [divider, buttons] {
             v.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true
         }
         stack.widthAnchor.constraint(equalToConstant: Self.width).isActive = true
@@ -186,6 +185,7 @@ final class RouteEditorController: NSWindowController, NSTextFieldDelegate {
         widthField.stringValue = String(original.width)
         heightField.stringValue = String(original.height)
         rotationPopup.selectItem(at: Self.rotations.firstIndex(of: original.rotation) ?? 0)
+        shownRotation = original.rotation
         VideoSettingsPane.fillScalings(scalingPopup, chosen: original.scaling)
         scalingChosen()
         displayChosen()
@@ -195,6 +195,21 @@ final class RouteEditorController: NSWindowController, NSTextFieldDelegate {
     private var chosenDisplay: StageDisplay? {
         let id = displayPopup.selectedItem?.representedObject as? String
         return displays.first { $0.id == id }
+    }
+
+    /// The rotation the size fields were last drawn for.
+    private var shownRotation = 0
+
+    /// A quarter turn from upright (or back) swaps the width and height typed, so the route keeps
+    /// the shape of what it is shown on turned (as QLab 5 does); a half turn changes nothing.
+    @objc private func rotationChosen() {
+        let rotation = rotationPopup.selectedItem?.representedObject as? Int ?? 0
+        if (rotation % 180 == 0) != (shownRotation % 180 == 0) {
+            let w = widthField.stringValue
+            widthField.stringValue = heightField.stringValue
+            heightField.stringValue = w
+        }
+        shownRotation = rotation
     }
 
     @objc private func scalingChosen() {
@@ -212,9 +227,10 @@ final class RouteEditorController: NSWindowController, NSTextFieldDelegate {
 
     @objc private func displayChosen() {
         let size = chosenSize
-        displaySizeLabel.stringValue =
-            size.map { String(format: loc("settings.video.resolution"), String($0.width), String($0.height)) }
-            ?? loc("routeEditor.noDisplaySize")
+        // With no display chosen the size read is the route's own (as QLab 5 shows it); never typed in.
+        displaySizeLabel.stringValue = String(
+            format: loc("settings.video.resolution"), String(size?.width ?? UInt32(max(0, original.width))),
+            String(size?.height ?? UInt32(max(0, original.height))))
         fromDisplayButton.isEnabled = size != nil
     }
 
@@ -223,6 +239,19 @@ final class RouteEditorController: NSWindowController, NSTextFieldDelegate {
         guard let size = chosenSize else { return }
         widthField.stringValue = String(size.width)
         heightField.stringValue = String(size.height)
+    }
+
+    /// Runs the dialog modally, centred over `parent` (the stage standing back meanwhile, as for any
+    /// question); returns once OK or Cancel took it down (`onDone` stops the modal run).
+    func run(over parent: NSWindow?) {
+        guard let window else { return }
+        if let p = parent?.frame {
+            window.setFrameTopLeftPoint(NSPoint(x: p.midX - window.frame.width / 2, y: p.maxY - 80))
+        } else {
+            window.center()
+        }
+        _ = StandBack.runModal(window)
+        window.orderOut(nil)
     }
 
     @objc private func cancelClicked() { onDone?() }

@@ -3,6 +3,8 @@
 # Makes the release disk image from a built, verified openLab.app: <out>/openLab-<version>.dmg holding the app
 # and a link to /Applications. The app inside is named "openLab <version>.app" so several versions can sit side
 # by side in /Applications and a show can stay on a known-good one.
+# The Finder window (icon view, app and Applications link side by side, licence texts below) comes from a
+# .DS_Store that dmg-layout.py writes into the image, so no Finder session is needed (CI has none).
 set -euo pipefail
 
 app="${1:?usage: make-dmg.sh <openLab.app> <out dir>}"
@@ -19,26 +21,34 @@ ln -s /Applications "$stage/Applications"
 cp "$app/Contents/Resources/LICENSE" "$stage/LICENSE.txt"
 cp "$app/Contents/Resources/THIRD-PARTY-NOTICES.txt" "$stage/THIRD-PARTY-NOTICES.txt"
 codesign --verify --deep --strict "$stage/openLab $version.app"
+python3 -I "$(dirname "$0")/dmg-layout.py" "$stage/.DS_Store" "openLab $version.app"
 dmg="$out/openLab-$version.dmg"
+volname="openLab $version"
+
+# On CI runners hdiutil fails now and then with "Resource busy" while the system still holds the image or the
+# folder (run 44368937589); only that failure is tried again, up to three times. Any other failure stops here.
+# Not -quiet, so a failure shows its reason.
+hdiutil_retry() {
+  local attempt=1 result
+  while :; do
+    if result=$(hdiutil "$@" 2>&1); then
+      printf '%s\n' "$result"
+      return 0
+    fi
+    printf '%s\n' "$result" >&2
+    case "$result" in
+      *"Resource busy"*) [ "$attempt" -lt 3 ] || return 1 ;;
+      *) return 1 ;;
+    esac
+    attempt=$((attempt + 1))
+    echo "make-dmg: hdiutil was busy; trying again ($attempt of 3)" >&2
+    sleep 5
+  done
+}
+
 rm -f "$dmg"
-# Not -quiet, so a failure shows its reason. On CI runners hdiutil fails now and then with
-# "Resource busy" while the system still holds the image or the folder (run 44368937589); only that
-# failure is tried again, up to three times. Any other failure stops here.
-attempt=1
-while :; do
-  rm -f "$dmg"
-  if result=$(hdiutil create -volname "openLab $version" -srcfolder "$stage" -fs HFS+ -format UDZO "$dmg" 2>&1); then
-    printf '%s\n' "$result"
-    break
-  fi
-  printf '%s\n' "$result" >&2
-  case "$result" in
-    *"Resource busy"*) [ "$attempt" -lt 3 ] || exit 1 ;;
-    *) exit 1 ;;
-  esac
-  attempt=$((attempt + 1))
-  echo "make-dmg: hdiutil was busy; trying again ($attempt of 3)" >&2
-  sleep 5
-done
+# -ov: a busy attempt that left a part-written image does not make the retry fail with "File exists".
+hdiutil_retry create -ov -volname "$volname" -srcfolder "$stage" -fs HFS+ -format UDZO "$dmg"
 hdiutil verify "$dmg"
+"$(dirname "$0")/check-dmg.sh" "$dmg"
 echo "make-dmg: $dmg"

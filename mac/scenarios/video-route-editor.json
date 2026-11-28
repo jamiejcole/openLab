@@ -28,13 +28,13 @@
     { "focus": "settings" },
     { "tab": "videoRouting" },
     { "click": "settings-video-edit-1" },
-    { "focus": "sheet" },
+    { "focus": "route-editor" },
     { "shot": "route-editor" },
     { "choose": "route-editor-scaling", "item": "Centre" },
     { "shot": "route-editor-centre" },
     { "click": "route-editor-cancel" },
     { "click": "settings-video-edit-3" },
-    { "focus": "sheet" },
+    { "focus": "route-editor" },
     { "shot": "route-editor-missing-display" }
   ]
 }

@@ -83,6 +83,11 @@ for f in LICENSE THIRD-PARTY-NOTICES.txt; do
     fi
 done
 python3 -I "$(dirname "$0")/../../scripts/third-party-notices.py" check "$app/Contents/Resources/THIRD-PARTY-NOTICES.txt" || exit 1
+app_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$app/Contents/Info.plist" 2>/dev/null || true)
+if [ "$app_id" != "dev.openlab.openLab" ]; then
+    echo "error: $app has bundle id '$app_id', not dev.openlab.openLab" >&2
+    exit 1
+fi
 # The stage host's helper app: no Dock icon or menu bar, its own bundle id, signed on its own.
 ui_element=$(/usr/libexec/PlistBuddy -c "Print :LSUIElement" "$helper/Contents/Info.plist" 2>/dev/null || true)
 helper_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$helper/Contents/Info.plist" 2>/dev/null || true)

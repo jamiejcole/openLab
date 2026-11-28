@@ -87,8 +87,9 @@ final class ScenarioRunner {
         /// `"workspace"` goes back to the workspace window. `"patch-editor"`: the patch editor last
         /// opened (a click on a row's Edit or the inspector's patch buttons), its `tab` the editor's.
         /// `"stage-editor"`: the stage editor last opened (a click on a `settings-video-edit-N` of
-        /// Video Outputs). `"sheet"` also takes the output route editor a route row's Edit opened,
-        /// drawn over the settings window.
+        /// Video Outputs). `"route-editor"`: the output route editor a route row's Edit opened,
+        /// drawn as its own window. `"resize-stage"`: the stage editor's resize dialog (a click on
+        /// `stage-editor-resize`), drawn as its own window.
         case focus(String, launcher: LauncherLook?)
         /// `{"shot": "name"}`: `<OUT>/<n>-<name>.png`, the whole window at 2x. With `"display": "V1"`
         /// (or a list) each named virtual display's composite is shot beside it as
@@ -431,12 +432,12 @@ final class ScenarioRunner {
         case "focus":
             let which = try string("focus")
             let known = [
-                "workspace", "settings", "sheet", "patch-editor", "stage-editor", "preferences", "status", "about",
-                "launcher", "qlab-import", "qlab-notes",
+                "workspace", "settings", "sheet", "patch-editor", "stage-editor", "route-editor", "resize-stage",
+                "preferences", "status", "about", "launcher", "qlab-import", "qlab-notes",
             ]
             guard known.contains(which) else {
                 throw Failure(
-                    "\"focus\" must be \"workspace\", \"settings\", \"patch-editor\", \"stage-editor\", \"preferences\", \"status\", \"about\", \"launcher\", \"qlab-import\", \"qlab-notes\" or \"sheet\""
+                    "\"focus\" must be \"workspace\", \"settings\", \"patch-editor\", \"stage-editor\", \"route-editor\", \"resize-stage\", \"preferences\", \"status\", \"about\", \"launcher\", \"qlab-import\", \"qlab-notes\" or \"sheet\""
                 )
             }
             guard which == "launcher" else {
@@ -546,6 +547,13 @@ final class ScenarioRunner {
         {
             return settings
         }
+        // The resize dialog, once done, gives the steps back to its stage editor.
+        if let f = focused, f.identifier?.rawValue == ResizeStageDialog.id,
+            let editor = wc.existingSettingsWindow?.stageEditor, editor.resizeDialog?.window !== f,
+            let editorWindow = editor.window
+        {
+            return editorWindow
+        }
         // The tool's question, once answered, gives the steps back to the tool.
         if let f = focused, let tool = wc.existingMissingFiles, f.sheetParent == nil, isChoiceSheet(f),
             tool.choiceSheet?.window !== f
@@ -562,11 +570,6 @@ final class ScenarioRunner {
     /// The window a sheet shown in `w` belongs over, and that sheet (nil: `w` is no sheet's).
     private func sheetOver(_ w: NSWindow) -> (base: NSWindow, sheet: NSWindow?) {
         if w is PasteSheetWindow { return (wc.window!, wc.pasteSheet?.window) }
-        if let sc = wc.existingSettingsWindow, let settings = sc.window, let route = sc.routeEditor?.window,
-            w === route || w === settings
-        {
-            return (settings, route)
-        }
         if let tool = wc.existingMissingFiles, let toolWindow = tool.window {
             if isChoiceSheet(w) || w === toolWindow { return (toolWindow, tool.choiceSheet?.window) }
         }
@@ -1116,11 +1119,22 @@ final class ScenarioRunner {
             } else if which == "sheet" {
                 guard
                     let sheet = wc.existingMissingFiles?.choiceSheet?.window ?? wc.pasteSheet?.window
-                        ?? wc.existingSettingsWindow?.routeEditor?.window
                 else {
                     throw Failure("no sheet is up")
                 }
                 focused = sheet
+            } else if which == "route-editor" {
+                guard let w = wc.existingSettingsWindow?.routeEditor?.window else {
+                    throw Failure("no route editor is up (click a settings-video-edit-N on Output Routing first)")
+                }
+                w.appearance = wc.window?.appearance
+                focused = w
+            } else if which == "resize-stage" {
+                guard let w = wc.existingSettingsWindow?.stageEditor?.resizeDialog?.window else {
+                    throw Failure("no resize dialog is up (click stage-editor-resize first)")
+                }
+                w.appearance = wc.window?.appearance
+                focused = w
             } else if which == "stage-editor" {
                 guard let editor = wc.settingsWindow.stageEditor, let w = editor.window else {
                     throw Failure("no stage editor was opened (click a settings-video-edit-N first)")

@@ -1,0 +1,38 @@
+{
+  "about": "#860 D1-D2: a Video cue's I/O tab: the stage pop-up naming where each stage goes, Monitor, the stage's size and Edit beside it; the pop-up's menu (none, the stages under a heading, Video Settings, New Stage).",
+  "show": "Video",
+  "displays": "V1:1920x1080,V2:1280x720",
+  "media": {
+    "media/clip.mov": 4,
+    "media/still.png": 1,
+    "media/card.jpg": 1,
+    "media/A very long name for a projection clip used in the second act.mov": 2
+  },
+  "settings": {
+    "settings_version": 1,
+    "workspaces": {
+      "00000000-0000-0000-0000-0000000000f0": {
+        "patches": {},
+        "routes": {
+          "00000000-0000-0000-0000-0000000000f1": {
+            "display": "V1",
+            "name": "Virtual V1",
+            "width": 1920,
+            "height": 1080
+          }
+        }
+      }
+    }
+  },
+  "window": { "width": 1760, "height": 929 },
+  "steps": [
+    { "advance": 0.1 },
+    { "select": "1" },
+    { "tab": "io" },
+    { "shot": "io-tab" },
+    { "open_menu": "inspector-io-stage" },
+    { "shot": "io-stage-menu" },
+    { "resize": [800, 500] },
+    { "shot": "io-tab-least" }
+  ]
+}

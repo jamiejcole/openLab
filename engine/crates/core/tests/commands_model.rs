@@ -3018,6 +3018,72 @@ fn route_region_and_stage_steps_are_named_through_undo_and_redo() {
     );
 }
 
+/// A cue edit is one undo step with a name for the Edit menu; a transaction of several cue
+/// edits that mean the same thing keeps it, a mix of kinds has none.
+#[test]
+fn cue_steps_are_named_through_undo_and_redo() {
+    let mut ws = workspace(vec![cue(1, CueKind::Memo), cue(2, CueKind::Memo)]);
+    let mut history = History::new();
+    let rename = |id, v: &str| Command::SetCueProperty {
+        id: cue_id(id),
+        property: CueProperty::Name { value: v.into() },
+    };
+    let steps = [
+        (
+            Command::AddCue {
+                at: Position {
+                    list: list_id(1),
+                    parent: None,
+                    index: 2,
+                },
+                cue: cue(3, CueKind::Memo),
+                auto_number: false,
+            },
+            StepName::AddCue,
+        ),
+        (rename(1, "A"), StepName::RenameCue),
+        (
+            Command::BatchSet {
+                ids: vec![cue_id(1), cue_id(2)],
+                property: CueProperty::Armed { value: false },
+            },
+            StepName::EditCue,
+        ),
+        (
+            Command::MoveCue {
+                id: cue_id(3),
+                index: 0,
+            },
+            StepName::MoveCue,
+        ),
+        (
+            Command::Transaction {
+                commands: vec![
+                    Command::RemoveCue { id: cue_id(1) },
+                    Command::RemoveCue { id: cue_id(2) },
+                ],
+            },
+            StepName::RemoveCue,
+        ),
+    ];
+    for (command, name) in steps {
+        history.execute(&mut ws, command).unwrap();
+        assert_eq!(history.undo_name(), Some(name));
+    }
+    history.undo(&mut ws).unwrap();
+    assert_eq!(history.redo_name(), Some(StepName::RemoveCue));
+    assert_eq!(history.undo_name(), Some(StepName::MoveCue));
+    let mixed = Command::Transaction {
+        commands: vec![rename(3, "B"), Command::RemoveCue { id: cue_id(3) }],
+    };
+    history.execute(&mut ws, mixed).unwrap();
+    assert_eq!(
+        history.undo_name(),
+        None,
+        "a rename and a delete have no one name"
+    );
+}
+
 // ---- Cue lists ----
 
 #[test]

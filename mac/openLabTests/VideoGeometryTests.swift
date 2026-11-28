@@ -474,7 +474,7 @@ extension VideoCueTests {
         XCTAssertTrue(g.thumbnail.hasStage)
         let none = wc.inspector.videoIO
         wc.inspector.tabView.selectTabViewItem(withIdentifier: "io")
-        none.stagePopup.selectItem(at: none.stagePopup.numberOfItems - 1)
+        none.stagePopup.selectItem(withTitle: loc("inspector.io.stageNone"))
         XCTAssertTrue(none.stagePopup.sendAction(none.stagePopup.action, to: none.stagePopup.target))
         await soon("on no stage") { self.kind(6)?["stage"] == .null || self.kind(6)?["stage"] == nil }
         await soon { !self.g.thumbnail.hasStage }

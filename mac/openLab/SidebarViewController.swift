@@ -235,15 +235,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     /// act on the whole workspace, so the strip reads every cue of every list.
     func updateTransport() {
         guard isViewLoaded else { return }
-        var playing = false
-        var held = false
-        for state in store.cueStates.values.map(\.state) {
-            switch state {
-            case .running, .fading, .preWaiting, .postWaiting: playing = true
-            case .paused: held = true
-            default: break
-            }
-        }
+        let playing = store.anyPlaying()
+        let held = store.anyPaused()
         if let pause = transportButtons[AX.transportPause] as? TransportButton {
             pause.isEnabled = playing
             pause.plate = playing ? MarkColour.caution : nil

@@ -5,16 +5,16 @@ import Foundation
 /// The stage edits (VID-01; docs/protocol.md, core `video.rs`): each one engine command and one
 /// undo step.
 extension Command {
-    /// `AddStage` at `index`: a new stage of `width` x `height` pixels, keeping black between cues
-    /// once a picture has played on it, with one region covering it sent to `route` when one is
-    /// given (`region` its id).
+    /// `AddStage` at `index`: a new stage of `width` x `height` pixels on the top layer, keeping
+    /// black between cues once a picture has played on it, with one region covering it sent to
+    /// `route` when one is given (`region` its id).
     static func addStage(
         id: ModelID, name: String, width: Int, height: Int, index: Int, route: ModelID? = nil,
         region: ModelID? = nil
     ) -> Command {
         var stage: [String: JSONValue] = [
             "id": .string(id.raw), "name": .string(name), "width": .int(Int64(width)),
-            "height": .int(Int64(height)), "keep_black": .bool(true), "layer": .int(1),
+            "height": .int(Int64(height)), "keep_black": .bool(true), "layer": .int(Int64(StageLayer.top)),
         ]
         if let route, let region {
             stage["regions"] = .array([
@@ -30,6 +30,28 @@ extension Command {
     /// `RemoveStage`. Its display choice on this machine is kept, so an undo brings it back there.
     static func removeStage(_ id: ModelID) -> Command {
         Command(.object(["type": .string("remove_stage"), "id": .string(id.raw)]))
+    }
+
+    /// `MoveStage` to `index` among the stages, counted after taking it out.
+    static func moveStage(_ id: ModelID, to index: Int) -> Command {
+        Command(.object(["type": .string("move_stage"), "id": .string(id.raw), "index": .int(Int64(index))]))
+    }
+
+    /// `SetStageProperty` `size` with `regions` set exactly as given (each with its id and route),
+    /// not scaled: one undo step for the size and the regions together.
+    static func resizeStage(_ id: ModelID, width: Int, height: Int, regions: [RegionRow]) -> Command {
+        let list: [JSONValue] = regions.map { r in
+            var region = r.bounds.json
+            region["id"] = .string(r.id.raw)
+            if let route = r.route { region["route"] = .string(route.raw) }
+            return .object(region)
+        }
+        return setStage(
+            id,
+            .object([
+                "type": .string("size"), "width": .int(Int64(width)), "height": .int(Int64(height)),
+                "regions": .array(list),
+            ]))
     }
 
     /// `SetStageProperty`: `property` is the property object (`name`, `size`, `keep_black`, `layer`).
@@ -108,6 +130,12 @@ extension Command {
                 "property": property,
             ]))
     }
+}
+
+/// A stage's layer (docs/file-format.md §4.7): 0 at the bottom to 1000 on top.
+enum StageLayer {
+    static let top = 1000
+    static let bottom = 0
 }
 
 /// A region's place on its stage (docs/file-format.md §4.8): stage pixels from the top left.

@@ -284,6 +284,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         inspector.onChooseFile = chooseFile
         inspector.onJumpToTarget = { [weak self] id in self?.jumpToTarget(id) }
         inspector.onEditPatch = { [weak self] id in self?.editPatch(id) }
+        inspector.onEditStage = { [weak self] id in self?.settingsWindow.openStageEditor(id) }
+        inspector.onOpenVideoSettings = { [weak self] in _ = self?.showSettings(page: .video) }
         cueList.onChooseFile = chooseFile
         cueList.onKindDrop = { [weak self] kind, parent, index in
             Task { await self?.editor.add(kind, after: self?.cueList.selectedIDs(), at: (parent, index)) }

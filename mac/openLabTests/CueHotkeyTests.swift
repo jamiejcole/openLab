@@ -825,6 +825,37 @@ final class CueHotkeyFiringTests: XCTestCase {
         }
     }
 
+    /// The Transport menu holds the key map of the workspace in front when it was last refreshed. A
+    /// cue hotkey in another workspace on that chord still fires when that other workspace is in front,
+    /// even though the stale menu item would be greyed there (nothing plays): the greyed-key swallow
+    /// leaves Transport items alone.
+    func testACueHotkeyOnAnotherWorkspacesTransportKeyFiresDespiteTheStaleMenu() async throws {
+        let saved = NSApp.mainMenu
+        NSApp.mainMenu = MainMenu.make().bar
+        defer { NSApp.mainMenu = saved }
+        let delegate = AppDelegate()
+        delegate.appController = app
+        app.isDisabledMenuChord = { delegate.menuItemIsOff(for: $0) }
+        // The delegate and the app hold each other through this closure: let go of it.
+        defer { app.isDisabledMenuChord = nil }
+        let cmdK = KeyChord("k", [.command])
+        _ = await first.send(command: .setWorkspaceKey(.pauseAll, cmdK.hotkeyJSON))
+        _ = await other.send(command: .setProperty(second, .triggers(hotkey: cmdK.hotkeyJSON, enabled: true)))
+        await assertEventually { self.other.model?.cueHotkeys.contains { $0.chord == cmdK } == true }
+        keyDoc = demoDoc
+        let transport = try XCTUnwrap(
+            NSApp.mainMenu?.items.first { $0.submenu?.title == loc("menu.transport") }?.submenu)
+        await assertEventually("the Demo's Pause All key is on the menu") {
+            delegate.menuNeedsUpdate(transport)
+            return transport.items.contains { $0.keyEquivalent == "k" }
+        }
+        XCTAssertTrue(delegate.menuItemIsOff(for: cmdK) == false, "a Transport item is never matched")
+        keyDoc = secondDoc
+        XCTAssertNil(app.handleKeyDown(try event("k", .command, code: 40)))
+        try await run()
+        await assertEventually("the second workspace's cue fired") { self.playing(self.other, self.second) }
+    }
+
     /// Old files keep V and S: the demo show is a version 7 file, and in it plain V previews the selected
     /// cue (a second press leaves it playing) and plain S panics it, with no setup.
     func testOldFilesKeepVAndS() async throws {
