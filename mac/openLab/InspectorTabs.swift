@@ -66,7 +66,7 @@ extension InspectorViewController {
         let byID = Dictionary(
             tabView.tabViewItems.compactMap { i in (i.identifier as? String).map { ($0, i) } },
             uniquingKeysWith: { a, _ in a })
-        // Removing and re-adding selects tabs on the way; only the final selection may count as shown.
+        // Only the final selection may count as shown, so the delegate hears none of the steps.
         let delegate = tabView.delegate
         tabView.delegate = nil
         defer {
@@ -74,9 +74,24 @@ extension InspectorViewController {
             syncTabBar()
             updateTimeLoopsActive()
         }
-        for item in tabView.tabViewItems { tabView.removeTabViewItem(item) }
+        // Every switch of the shown tab swaps its view into the window, lays the inspector out and
+        // rebuilds the key loop, and removing the shown tab switches to another: so the tab it ends on is
+        // shown first, once, and the others are taken out and put back around it, never shown.
+        if let shown = Self.shownTab(chosen: chosenTabs[shownKind], wanted: wanted),
+            let item = byID[shown] ?? tabItems[shown]
+        {
+            if item.tabView !== tabView { tabView.addTabViewItem(item) }
+            if tabView.selectedTabViewItem !== item { tabView.selectTabViewItem(item) }
+        }
+        let kept = tabView.selectedTabViewItem.flatMap { ($0.identifier as? String).map(wanted.contains) } == true
+        for item in tabView.tabViewItems where !(kept && item === tabView.selectedTabViewItem) {
+            tabView.removeTabViewItem(item)
+        }
+        var position = 0
         for id in wanted {
-            if let item = byID[id] ?? tabItems[id] { tabView.addTabViewItem(item) }
+            guard let item = byID[id] ?? tabItems[id] else { continue }
+            if item.tabView !== tabView { tabView.insertTabViewItem(item, at: position) }
+            position += 1
         }
         selectChosen(wanted)
     }
