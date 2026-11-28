@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import AppKit
+import UniformTypeIdentifiers
 
 /// Which inspector tabs a cue kind has, in order. Basics and Triggers come first for every kind, then
 /// the kind's own tabs as QLab orders them; a tab view only ever holds this list for the shown cue.
@@ -66,7 +67,7 @@ extension InspectorViewController {
         let byID = Dictionary(
             tabView.tabViewItems.compactMap { i in (i.identifier as? String).map { ($0, i) } },
             uniquingKeysWith: { a, _ in a })
-        // Removing and re-adding selects tabs on the way; only the final selection may count as shown.
+        // Only the final selection may count as shown, so the delegate hears none of the steps.
         let delegate = tabView.delegate
         tabView.delegate = nil
         defer {
@@ -74,9 +75,33 @@ extension InspectorViewController {
             syncTabBar()
             updateTimeLoopsActive()
         }
-        for item in tabView.tabViewItems { tabView.removeTabViewItem(item) }
+        // Every switch of the shown tab swaps its view into the window, lays the inspector out and
+        // rebuilds the key loop, and removing the shown tab switches to another: so the tab it ends on is
+        // shown first, once, and the others are taken out and put back around it, never shown.
+        if let shown = Self.shownTab(chosen: chosenTabs[shownKind], wanted: wanted),
+            let item = byID[shown] ?? tabItems[shown]
+        {
+            if item.tabView !== tabView { tabView.addTabViewItem(item) }
+            if tabView.selectedTabViewItem !== item {
+                // A switch away from a tab holding the focus would hand it to the new tab's first field;
+                // the keys go back to the list instead, as when that tab was taken out.
+                if let window = tabView.window, let focused = window.firstResponder as? NSView,
+                    focused.isDescendant(of: tabView)
+                {
+                    window.makeFirstResponder(nil)
+                }
+                tabView.selectTabViewItem(item)
+            }
+        }
+        let kept = tabView.selectedTabViewItem.flatMap { ($0.identifier as? String).map(wanted.contains) } == true
+        for item in tabView.tabViewItems where !(kept && item === tabView.selectedTabViewItem) {
+            tabView.removeTabViewItem(item)
+        }
+        var position = 0
         for id in wanted {
-            if let item = byID[id] ?? tabItems[id] { tabView.addTabViewItem(item) }
+            guard let item = byID[id] ?? tabItems[id] else { continue }
+            if item.tabView !== tabView { tabView.insertTabViewItem(item, at: position) }
+            position += 1
         }
         selectChosen(wanted)
     }
@@ -347,13 +372,64 @@ final class TargetPathControl: NSPathControl {
     /// Shows a file's folders and name (the control hides for none); the tooltip holds the whole path.
     func show(url: URL?) {
         isHidden = url == nil
-        if let url, self.url != url {
-            self.url = url
-            setFullItems(InspectorViewController.shownPathItems(pathItems, of: url))
-        } else if url == nil {
-            self.url = nil
-        }
+        if self.url != url { self.url = url }
         toolTip = url?.path
+    }
+
+    private var shownURL: URL?
+
+    /// The file shown. Setting it builds the items from the path's own components and generic icons:
+    /// `NSPathControl.url` reads every component's icon from disk on the main thread, which stalls the
+    /// inspector on a volume that has stopped answering.
+    override var url: URL? {
+        get { shownURL }
+        set {
+            shownURL = newValue
+            guard let newValue else {
+                setFullItems([])
+                return
+            }
+            var names = newValue.standardizedFileURL.pathComponents.filter { $0 != "/" }
+            // A file on another drive starts at the drive, with a drive's icon, as the system's own path does.
+            let onDrive = names.count > 2 && names[0] == "Volumes"
+            if onDrive { names.removeFirst() }
+            let items = names.enumerated().map { (index, name) -> NSPathControlItem in
+                let item = NSPathControlItem()
+                item.title = name
+                if index == names.count - 1 {
+                    item.image = Self.icon(.file((name as NSString).pathExtension))
+                } else {
+                    item.image = Self.icon(index == 0 && onDrive ? .drive : .folder)
+                }
+                return item
+            }
+            setFullItems(InspectorViewController.shownPathItems(items, of: newValue))
+        }
+    }
+
+    private static var iconCache: [String: NSImage] = [:]
+
+    private enum IconKind {
+        case folder, drive
+        case file(String)
+    }
+
+    /// The generic icon of a folder, a drive or a file type; cached, and read from no file.
+    private static func icon(_ kind: IconKind) -> NSImage {
+        let key: String
+        let type: UTType
+        switch kind {
+        case .folder: (key, type) = ("\u{0}folder", .folder)
+        case .drive: (key, type) = ("\u{0}drive", .volume)
+        case .file(let ext):
+            key = ext.lowercased()
+            type = UTType(filenameExtension: ext) ?? .data
+        }
+        if let cached = iconCache[key] { return cached }
+        let image = NSWorkspace.shared.icon(for: type)
+        image.size = NSSize(width: 16, height: 16)
+        iconCache[key] = image
+        return image
     }
 
     /// The file's path is the value VoiceOver reads and a test finds the file by.

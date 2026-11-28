@@ -461,7 +461,8 @@ final class CopyMediaTests: XCTestCase {
         let chosen = try libFile("import.wav", seconds: 0.4)
         let added = await wc.editor.addFiles([chosen], parent: nil, index: 0)
         let cue = try XCTUnwrap(added.first)
-        XCTAssertEqual(wc.store.document?.dirty, true)
+        // The engine's document state follows the add's answer: wait for it, not for the answer.
+        await assertEventually("adding a file leaves the workspace unsaved") { wc.store.document?.dirty == true }
         let place = engine.folder.appendingPathComponent("saves-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: place, withIntermediateDirectories: true)
         app.pickSaveURL = { _, _ in SaveTarget(url: place.appendingPathComponent("Imported.openlab"), newFolder: true) }

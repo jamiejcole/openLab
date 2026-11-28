@@ -2197,6 +2197,25 @@ final class UserTestFlowTests: XCTestCase {
         XCTAssertFalse(control.pathItems.map(\.title).contains("\u{2026}"), "all of it, given the room")
     }
 
+    /// The path is built from the URL's own components and generic icons, so a file on a folder that is not
+    /// there (as on a volume that has stopped answering) still shows every folder and the file at once.
+    func testATargetPathOnAMissingFolderShowsItsComponentsWithIconsFromNoDisk() {
+        let url = URL(fileURLWithPath: "/Volumes/NoSuchShowDisk/Props/media/a.wav")
+        let control = TargetPathControl(frame: NSRect(x: 0, y: 0, width: 900, height: 24))
+        control.show(url: url)
+        control.layoutSubtreeIfNeeded()
+        XCTAssertEqual(control.pathItems.map(\.title), ["NoSuchShowDisk", "Props", "media", "a.wav"], "from the drive")
+        XCTAssertTrue(control.pathItems.allSatisfy { $0.image != nil }, "each with its icon")
+        XCTAssertEqual(control.url, url)
+        XCTAssertEqual(control.accessibilityValue() as? String, url.path)
+        XCTAssertEqual(control.toolTip, url.path)
+        XCTAssertFalse(control.isHidden)
+        control.show(url: nil)
+        XCTAssertTrue(control.isHidden)
+        XCTAssertNil(control.url)
+        XCTAssertTrue(control.pathItems.isEmpty)
+    }
+
     func testAFileInTheHomeFolderIsShownFromTheHomeFolderDown() {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let url = home.appendingPathComponent("Shows/media/a.wav")

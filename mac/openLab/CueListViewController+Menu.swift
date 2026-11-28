@@ -72,9 +72,10 @@ enum CueRowMenu {
     /// The file a media path names: absolute as given, relative to the folder of the saved show.
     @MainActor static func mediaURL(_ media: String?, showPath: String?) -> URL? {
         guard let media, !media.isEmpty else { return nil }
-        if media.hasPrefix("/") { return URL(fileURLWithPath: media) }
+        // Said to be a file and a folder: otherwise the URL asks the disk, which can stall on a dead volume.
+        if media.hasPrefix("/") { return URL(fileURLWithPath: media, isDirectory: false) }
         guard let dir = CueEditor.sourceDir(showPath: showPath) else { return nil }
-        return URL(fileURLWithPath: dir).appendingPathComponent(media)
+        return URL(fileURLWithPath: dir, isDirectory: true).appendingPathComponent(media, isDirectory: false)
     }
 }
 

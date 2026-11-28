@@ -6,7 +6,7 @@ import XCTest
 
 /// The inspector's tab memory (QLab 5, owner-checked 2026-11-27): each cue type remembers the tab last
 /// chosen on a cue of that type, for the session. The Demo workspace with the Video show's cues added,
-/// offline: the tab view and the bar are what is read.
+/// offline unless a test says the real engine: the tab view and the bar are what is read.
 @MainActor
 final class InspectorTabMemoryTests: XCTestCase {
     private static let audio1 = TestSnapshots.intro
@@ -18,6 +18,7 @@ final class InspectorTabMemoryTests: XCTestCase {
     private var vc: InspectorViewController!
     private var window: NSWindow!
     private var rig: Rig?
+    private var workspaceWindow: WorkspaceWindowController?
 
     override func setUp() async throws {
         var snap = try TestSnapshots.show()
@@ -58,7 +59,8 @@ final class InspectorTabMemoryTests: XCTestCase {
 
     override func tearDown() async throws {
         window?.close()
-        (window, vc, store, rig) = (nil, nil, nil, nil)
+        workspaceWindow?.close()
+        (window, vc, store, rig, workspaceWindow) = (nil, nil, nil, nil, nil)
     }
 
     private var shown: String? { vc.tabView.selectedTabViewItem?.identifier as? String }
@@ -109,9 +111,9 @@ final class InspectorTabMemoryTests: XCTestCase {
         XCTAssertEqual(shown, "curve")
     }
 
-    /// The owner's 7-step case on the real engine: the Demo show with the Video show's stages and cues.
-    func testTabMemoryTheOwnersOriginalFailingCase() async throws {
-        let opened = try await Rig.open(
+    /// The Demo show with the Video show's stages and cues after its own, on the real engine.
+    private func openDemoWithVideo() async throws -> Rig {
+        try await Rig.open(
             "Demo",
             edit: { folder in
                 let source = try XCTUnwrap(TestEngine.testShows).appendingPathComponent("Video/Video.openlab")
@@ -128,6 +130,11 @@ final class InspectorTabMemoryTests: XCTestCase {
                     ws.set("cue_lists", .array([list]))
                 }
             })
+    }
+
+    /// The owner's 7-step case on the real engine: the Demo show with the Video show's stages and cues.
+    func testTabMemoryTheOwnersOriginalFailingCase() async throws {
+        let opened = try await openDemoWithVideo()
         rig = opened
         store = opened.store
         vc = InspectorViewController(store: store)
@@ -143,6 +150,92 @@ final class InspectorTabMemoryTests: XCTestCase {
         try select(Self.audio1, click: "levels")
         try select(Self.video1)
         XCTAssertEqual(shown, "geometry")
+    }
+
+    /// The arrow keys through cues of every kind in the workspace window, on the real engine: each cue
+    /// shows its own tabs in order, on the tab its type last had (the first when none), the bar agrees,
+    /// and only that tab's view is in the window, also after the tab list changed under the shown tab.
+    func testTheArrowKeysThroughEveryKindShowEachCuesTabsOnItsTypesChoice() async throws {
+        let opened = try await openDemoWithVideo()
+        rig = opened
+        let wc = WorkspaceWindowController(store: opened.store)
+        workspaceWindow = wc
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        let outline = wc.cueList.outlineView
+        outline.expandItem(nil, expandChildren: true)
+        wc.cueList.selectAsUser([Self.audio1])
+        XCTAssertTrue(window.makeFirstResponder(outline))
+        let inspector = wc.inspector
+        let group: ModelID = "00000000-0000-0000-0000-000000000020"
+        let rain: ModelID = "00000000-0000-0000-0000-000000000022"
+        let radio: ModelID = "00000000-0000-0000-0000-000000000023"
+        // How often a tab's view entered the window since the last check: a step shows its tab once
+        // (a view swap, a layout and a new key loop each time), never every tab on the way.
+        let tabViews = Set(inspector.tabItems.values.compactMap { $0.view.map(ObjectIdentifier.init) })
+        let entries = ViewEntries(counting: tabViews)
+        defer { entries.restore() }
+        func key(_ code: UInt16, _ scalar: Int) throws {
+            let chars = String(try XCTUnwrap(UnicodeScalar(scalar)))
+            window.sendEvent(
+                try XCTUnwrap(
+                    NSEvent.keyEvent(
+                        with: .keyDown, location: .zero, modifierFlags: [.numericPad, .function], timestamp: 0,
+                        windowNumber: window.windowNumber, context: nil, characters: chars,
+                        charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code)))
+        }
+        func down() throws { try key(125, NSDownArrowFunctionKey) }
+        func up() throws { try key(126, NSUpArrowFunctionKey) }
+        func click(_ tab: String) throws {
+            try XCTUnwrap(inspector.tabBar.buttons.first { $0.tabID == tab }, tab).performClick(nil)
+            _ = entries.take()  // the user's own tab choice shows that tab: not counted against the step
+        }
+        func check(_ id: ModelID, shows tab: String, line: UInt = #line) throws {
+            XCTAssertLessThanOrEqual(entries.take(), 1, "a tab's view entered the window more than once", line: line)
+            XCTAssertEqual(wc.cueList.selectedIDs(), [id], "the highlight", line: line)
+            let model = try XCTUnwrap(opened.store.model)
+            let cue = try XCTUnwrap(model.cue(id))
+            let wanted = InspectorTabs.ids(for: cue, model: model, media: opened.store.mediaDurations)
+            XCTAssertEqual(
+                inspector.tabView.tabViewItems.compactMap { $0.identifier as? String }, wanted, "the cue's tabs",
+                line: line)
+            XCTAssertEqual(inspector.tabBar.buttons.map(\.tabID), wanted, "the bar's tabs", line: line)
+            XCTAssertEqual(inspector.tabView.selectedTabViewItem?.identifier as? String, tab, line: line)
+            XCTAssertEqual(inspector.tabBar.buttons.filter(\.isChosen).map(\.tabID), [tab], line: line)
+            XCTAssertEqual(
+                inspector.tabItems.filter { $0.value.view?.window != nil }.map(\.key), [tab],
+                "only the shown tab's view is in the window", line: line)
+        }
+        try check(Self.audio1, shows: "basics")
+        try click("levels")
+        try check(Self.audio1, shows: "levels")
+        try down()
+        try check(Self.fade, shows: "basics")
+        try click("curve")
+        try down()
+        try check(group, shows: "basics")
+        try click("mode")
+        try down()
+        try check(Self.audio2, shows: "levels")
+        try down()
+        try check(rain, shows: "levels")
+        try down()
+        try check(radio, shows: "levels")
+        try down()
+        try check(Self.video1, shows: "basics")
+        try click("geometry")
+        try down()
+        try check(Self.still, shows: "geometry")
+        try up()
+        try check(Self.video1, shows: "geometry")
+        try up()
+        try check(radio, shows: "levels")
+        for _ in 0..<3 { try up() }
+        try check(group, shows: "mode")
+        try up()
+        try check(Self.fade, shows: "curve")
+        try up()
+        try check(Self.audio1, shows: "levels")
     }
 
     // MARK: The Geometry thumbnail's read
@@ -197,4 +290,35 @@ final class InspectorTabMemoryTests: XCTestCase {
         XCTAssertTrue(tabs.contains("timeLoops"))
         XCTAssertTrue(panel.fadeInField.isHiddenOrHasHiddenAncestor, "a movie's fades are on its timeline")
     }
+}
+
+/// Counts `viewDidMoveToWindow` with a window for the views named, by wrapping NSView's for the test.
+@MainActor
+private final class ViewEntries {
+    private final class Box { var n = 0 }
+    private let box = Box()
+    private let method: Method
+    private let original: IMP
+
+    init(counting views: Set<ObjectIdentifier>) {
+        let selector = #selector(NSView.viewDidMoveToWindow)
+        method = class_getInstanceMethod(NSView.self, selector)!
+        let original = method_getImplementation(method)
+        self.original = original
+        let box = box
+        let block: @convention(block) (NSView) -> Void = { view in
+            if view.window != nil, views.contains(ObjectIdentifier(view)) { box.n += 1 }
+            typealias Call = @convention(c) (NSView, Selector) -> Void
+            unsafeBitCast(original, to: Call.self)(view, selector)
+        }
+        method_setImplementation(method, imp_implementationWithBlock(block))
+    }
+
+    /// The count since the last call.
+    func take() -> Int {
+        defer { box.n = 0 }
+        return box.n
+    }
+
+    func restore() { method_setImplementation(method, original) }
 }
