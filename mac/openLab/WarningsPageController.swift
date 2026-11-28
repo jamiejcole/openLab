@@ -311,6 +311,7 @@ final class WarningsPageController: NSWindowController, NSTableViewDataSource, N
                 as? WarningCell) ?? WarningCell()
         let w = rows[row]
         let dimmed = isHidden(w)
+        cell.setBroken(w.broken)
         cell.title.stringValue = w.title
         cell.title.textColor = dimmed ? .tertiaryLabelColor : .labelColor
         cell.detail.stringValue = w.detail

@@ -439,7 +439,21 @@ final class TargetPathControl: NSPathControl {
 
     /// The width one item takes: its icon, gaps and separator around the title.
     static func itemWidth(_ title: String, font: NSFont) -> CGFloat {
-        ceil((title as NSString).size(withAttributes: [.font: font]).width) + 30
+        ceil((title as NSString).size(withAttributes: [.font: font]).width) + 40
+    }
+
+    /// Longest title an item shows, in characters: a longer name is cut in the middle with an ellipsis
+    /// (the file's extension stays), so one long folder never fills the box and runs under the next
+    /// separator. The tooltip holds the whole path.
+    static let longestTitle = 24
+
+    static func shortened(_ title: String, limit: Int = longestTitle) -> String {
+        guard title.count > limit, limit > 3 else { return title }
+        let ext = (title as NSString).pathExtension
+        let tail = ext.isEmpty ? 0 : ext.count + 1
+        let keepEnd = min(max(tail, 0), limit / 2) + (ext.isEmpty ? 5 : 3)
+        let keepStart = limit - keepEnd - 1
+        return String(title.prefix(keepStart)) + "\u{2026}" + String(title.suffix(keepEnd))
     }
 
     /// How many of the folders just before the file are kept (the first item and the file always are,
@@ -466,6 +480,7 @@ final class TargetPathControl: NSPathControl {
     }
 
     func setFullItems(_ items: [NSPathControlItem]) {
+        for item in items { item.title = Self.shortened(item.title) }
         fullItems = items
         shownCount = -1
         pathItems = items

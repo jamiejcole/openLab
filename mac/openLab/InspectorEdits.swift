@@ -70,6 +70,17 @@ enum InspectorEdit {
     /// cue's comes from its file and trims, a control cue's action is instant).
     static let durationKinds: Set<String> = ["wait", "fade"]
 
+    /// The length a cue has at rest (a Fade's or Wait's duration, an Audio or Video cue's file), nil for
+    /// a kind without one. The list's Duration cell and an auto-follow cue's post-wait read it.
+    static func restingDuration(_ cue: Cue, media: CueMediaDuration?) -> Double? {
+        switch cue.kindType {
+        case "fade", "wait": return cue.raw["kind"]?["duration"]?.doubleValue ?? 0
+        case "audio": return media?.shownDuration
+        case "video": return videoDuration(cue, media: media)
+        default: return nil
+        }
+    }
+
     /// Whether `cue`'s duration is typed: a Wait or Fade cue's, and a Video cue's whose file is a still
     /// (QLab 5 p. 209: a still runs until stopped unless given a duration). A movie's comes from its
     /// file; a Video cue whose file is not probed yet (`media` nil) is taken as a still, so a typed
@@ -105,7 +116,13 @@ enum InspectorEdit {
         case .name: return cue.displayName
         case .notes: return cue.raw["notes"]?.stringValue ?? ""
         case .preWait: return shown(cue.raw["pre_wait"]?.doubleValue ?? 0)
-        case .postWait: return shown(cue.postWait)
+        case .postWait:
+            // An auto-follow cue goes on when it ends: the post-wait reads its duration, as the list's
+            // cell does (the field is not editable then).
+            if cue.raw["continue_mode"]?.stringValue == "auto_follow", let length = restingDuration(cue, media: media) {
+                return shown(length)
+            }
+            return shown(cue.postWait)
         case .duration:
             // An Audio cue's length is read-only: what its file gives, as the cue list shows it.
             if cue.kindType == "audio" { return media?.shownDuration.map(shown) ?? "" }

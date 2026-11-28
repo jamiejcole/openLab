@@ -726,6 +726,10 @@ final class ScenarioRunner {
         let app = AppController(session: session, scheduler: ManualScheduler())
         app.launching = true  // never the launcher
         app.controllers[ObjectIdentifier(store)] = wc
+        // The real app titles the window with the workspace's shown name as the engine lists it.
+        if let model = store.model {
+            wc.workspaceName = WorkspaceInfo.shownName(stored: model.name, path: store.document?.path)
+        }
         app.keyWindow = { [unowned self] in self.window }
         app.isTextEditing = { [unowned self] in (self.window.firstResponder as? NSText)?.isEditable == true }
         app.isRecordingKey = { [unowned self] in self.window.firstResponder is HotkeyRecorder }
@@ -1004,7 +1008,7 @@ final class ScenarioRunner {
                 case "starting": launcher.apply(state: .starting)
                 case "failed":
                     launcher.apply(
-                        state: .failed(String(format: loc("engine.alarm.spawnFailed"), "2")))
+                        state: .failed(EngineSupervisor.spawnFailedText(ENOENT)))
                 default: break
                 }
                 if look.notice, let gone = urls.first(where: { $0.path.hasPrefix("/Volumes/") }) {

@@ -2273,12 +2273,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     func restingDuration(_ node: CueNode) -> Double? {
-        switch node.cue.kindType {
-        case "fade", "wait": return node.cue.raw["kind"]?["duration"]?.doubleValue ?? 0
-        case "audio": return store.mediaDurations[node.id]?.shownDuration
-        case "video": return InspectorEdit.videoDuration(node.cue, media: store.mediaDurations[node.id])
-        default: return nil
-        }
+        InspectorEdit.restingDuration(node.cue, media: store.mediaDurations[node.id])
     }
 
     /// How far a running, paused or previewing cue is, drawn in its Duration cell: green running,

@@ -1490,6 +1490,12 @@ final class VideoCueTests: XCTestCase {
             self.store.model?.cue(Self.still)?.raw["kind"]?["fade_in"]?["duration"]?.doubleValue == 1
         }
         XCTAssertEqual(panel.fadeInField.stringValue, "00:01.000")
+        // The curve pop-up has its built-in fades label beside it, as a movie's has.
+        XCTAssertFalse(panel.fadeCheck.isHiddenOrHasHiddenAncestor, "the fades box is drawn")
+        XCTAssertTrue(panel.fadeCheck.isEnabled)
+        XCTAssertEqual(panel.fadeCheck.title, loc("timeLoops.fades"))
+        XCTAssertEqual(panel.fadeCheck.state, .on)
+        XCTAssertTrue(panel.fadeCurvePopup.isEnabled)
     }
 
     /// Load to time inside the range → GO starts on that frame (counted from the start trim).

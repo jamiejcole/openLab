@@ -199,6 +199,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         labels: [loc("sidebar.tab.cueLists"), loc("sidebar.tab.activeCues")],
         trackingMode: .selectOne, target: nil, action: nil)
     let newListButton = NSButton(title: loc("sidebar.newList"), target: nil, action: nil)
+    /// The row under the tables that holds New List; only the Cue Lists tab has it.
+    private let bottom = NSStackView()
     let listTable = NSTableView()
     let activeTable: NSTableView
 
@@ -348,7 +350,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         newListButton.target = self
         newListButton.action = #selector(newListClicked)
         // Carts are not built, so there is no New Cart button.
-        let bottom = NSStackView(views: [newListButton])
+        bottom.setViews([newListButton], in: .leading)
         bottom.distribution = .fillEqually
 
         let column = NSStackView(views: [strip, tabs, listScroll, activeScroll, bottom])
@@ -559,6 +561,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         tabs.selectedSegment = index
         listScroll.isHidden = index != 0
         activeScroll.isHidden = index != 1
+        bottom.isHidden = index != 0
         updateActiveEmptyNote()
     }
 

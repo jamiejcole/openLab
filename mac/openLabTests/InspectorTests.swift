@@ -980,6 +980,20 @@ final class NetworkInspectorTests: XCTestCase {
 
     // MARK: Flows
 
+    func testMessageAreaFillsTheSettingsTabFromTheFirstDrawAndOnReturn() throws {
+        func assertFilled(_ when: String) throws {
+            let field = inspector.networkMessageField
+            let tabArea = try XCTUnwrap(inspector.tabView.selectedTabViewItem?.view)
+            tabArea.layoutSubtreeIfNeeded()
+            XCTAssertGreaterThan(tabArea.bounds.width, 300, when)
+            XCTAssertEqual(field.frame.width, tabArea.bounds.width - 24, accuracy: 1, "\(when): fills the tab")
+        }
+        try assertFilled("first shown")
+        inspector.tabView.selectTabViewItem(withIdentifier: "basics")
+        inspector.tabView.selectTabViewItem(withIdentifier: "network")
+        try assertFilled("on return")
+    }
+
     func testSettingsTabExists() {
         XCTAssertEqual(
             inspector.tabView.tabViewItems.map(\.label),
@@ -2197,6 +2211,27 @@ final class UserTestFlowTests: XCTestCase {
         XCTAssertFalse(control.pathItems.map(\.title).contains("\u{2026}"), "all of it, given the room")
     }
 
+    /// A folder name longer than the items beside it is cut with an ellipsis, and everything drawn fits the
+    /// box, so no name runs under the next separator.
+    func testALongFolderNameInTheTargetPathIsCutWithAnEllipsisAndTheItemsFit() {
+        let long = "openlab-unit-E36698B0-6FAC-4356-A141-308E7BD2C0A1"
+        let url = URL(fileURLWithPath: "/var/folders/\(long)/shows-7DE85DBF-8A4B-4475-BA06-2301A90B1E00/media/o.wav")
+        let control = TargetPathControl(frame: NSRect(x: 0, y: 0, width: 640, height: 24))
+        control.controlSize = .small
+        control.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        control.show(url: url)
+        control.layoutSubtreeIfNeeded()
+        let titles = control.pathItems.map(\.title)
+        XCTAssertEqual(titles.last, "o.wav")
+        XCTAssertFalse(titles.contains(long), "the long name is not drawn whole")
+        let cut = titles.filter { $0.contains("\u{2026}") && $0 != "\u{2026}" }
+        XCTAssertFalse(cut.isEmpty, "a long folder keeps an ellipsis, not a mid-letter cut: \(titles)")
+        let font = control.font ?? .systemFont(ofSize: NSFont.smallSystemFontSize)
+        let used = titles.reduce(CGFloat(0)) { $0 + TargetPathControl.itemWidth($1, font: font) }
+        XCTAssertLessThanOrEqual(used, control.bounds.width, "every item fits: \(titles)")
+        XCTAssertEqual(control.toolTip, url.path)
+    }
+
     /// The path is built from the URL's own components and generic icons, so a file on a folder that is not
     /// there (as on a volume that has stopped answering) still shows every folder and the file at once.
     func testATargetPathOnAMissingFolderShowsItsComponentsWithIconsFromNoDisk() {
@@ -2368,6 +2403,12 @@ final class UserTestFlowTests: XCTestCase {
         let length = try XCTUnwrap(cell("duration", Self.intro)?.label.stringValue)
         await assertEventually { self.cell("postWait", Self.intro)?.label.stringValue == length }
         XCTAssertFalse(wc.cueList.beginCellEdit(Self.intro, column: "postWait"), "it is the duration: not typed")
+        // The inspector's Post-Wait shows what the list shows, not editable.
+        await select(Self.intro)
+        inspector.tabView.selectTabViewItem(at: 0)
+        await assertEventually { self.inspector.postWaitField.stringValue.hasPrefix(length) }
+        XCTAssertNotEqual(length, "00:00.00", "the cue has a length to show")
+        XCTAssertFalse(inspector.postWaitField.isEnabled)
         XCTAssertEqual(
             try XCTUnwrap(wc.cueList.continueMenu(row: row)).items.filter { $0.state == .on }.map(\.title),
             [loc("inspector.continue.auto_follow")])

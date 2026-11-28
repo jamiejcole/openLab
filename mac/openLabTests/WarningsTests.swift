@@ -448,6 +448,20 @@ final class WarningsTests: XCTestCase {
         XCTAssertEqual(cell.detail.textColor, .secondaryLabelColor)
     }
 
+    /// A broken cue's row is marked with the red cross its list row has, not the notice's caution mark.
+    func testABrokenCuesWarningsRowIsMarkedWithTheRedCross() async throws {
+        try await make()
+        let row = try XCTUnwrap(side.rows.firstIndex { $0.cue == radio })
+        XCTAssertTrue(side.rows[row].broken)
+        let cell = try XCTUnwrap(side.tableView(side.table, viewFor: nil, row: row) as? WarningCell)
+        XCTAssertEqual(cell.marker.contentTintColor, .systemRed)
+        XCTAssertEqual(cell.marker.image?.accessibilityDescription, loc("cue.state.broken"))
+        for other in side.rows.indices where !side.rows[other].broken {
+            let notice = try XCTUnwrap(side.tableView(side.table, viewFor: nil, row: other) as? WarningCell)
+            XCTAssertEqual(notice.marker.contentTintColor, MarkColour.caution)
+        }
+    }
+
     func testRelinkButtonAsksTheWindowToRelink() async throws {
         try await make()
         var asked = 0
