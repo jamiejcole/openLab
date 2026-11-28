@@ -32,10 +32,12 @@ struct StageRow: Equatable {
 /// The Video pages of the workspace settings (VID-01, VID-12; QLab 5 manual pp. 225-234), one
 /// `VideoSettingsPane` per section as QLab 5 splits them (UI map `settings.video.*`), only for what
 /// openLab has:
-/// - Video Outputs: the workspace's stages, one row each with its name (typed in place), its pixel
-///   size, the displays it reaches through its regions' output routes, and buttons that open its
-///   editor (`StageEditorWindowController`) and its monitor window (a live copy of the stage, QLab 5
-///   manual p. 157) and remove it; above them a pop-up that adds an empty stage or one on a route.
+/// - Video Outputs: the workspace's stages, one row each with a handle that drags it to another
+///   place, its icon and name (typed in place), its pixel size, where its regions' output routes
+///   reach (or that they go nowhere), and buttons that open its editor
+///   (`StageEditorWindowController`) and its monitor window (a live copy of the stage, QLab 5
+///   manual p. 157) and remove it; above them a pop-up that adds an empty stage (its editor opens)
+///   or one on a route.
 /// - Output Routing: the workspace's output routes, one row each with a handle that drags it to
 ///   another place, its name (typed in place), its size, the display it is shown on on this machine
 ///   (QLab 5 manual p. 232), its layout on that display (the whole of it, or one part of a display a
