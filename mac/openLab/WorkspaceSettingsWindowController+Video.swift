@@ -44,7 +44,11 @@ extension WorkspaceSettingsWindowController {
         }
         routeEditor = editor
         editor.onDone = { [weak self] in self?.endRouteEditor() }
-        if presentsEditors, Self.runsDialogs { editor.run(over: window) }
+        if presentsEditors, Self.runsDialogs {
+            editor.run(over: window)
+            // A modal run ended from outside (a quit aborts it) leaves no editor counted as up.
+            if routeEditor === editor { endRouteEditor() }
+        }
         return editor
     }
 

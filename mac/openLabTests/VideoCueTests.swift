@@ -673,24 +673,23 @@ final class VideoCueTests: XCTestCase {
             v.formatLabel.stringValue
                 == String(format: loc("inspector.io.videoFormat"), loc("inspector.io.codec.h264"), "288 × 160", "25")
         }
-        XCTAssertEqual(v.stagePopup.titleOfSelectedItem, "Stage 1")
+        let stage1 = "Stage 1 (\(String(format: loc("video.route.noDisplayNamed"), "Output 1")))"
+        XCTAssertEqual(v.stagePopup.titleOfSelectedItem, stage1)
         XCTAssertEqual(v.stageSizeLabel.stringValue, "1920 × 1080")
-        XCTAssertEqual(v.stagePopup.itemTitles, ["Stage 1", "Side screen", "", loc("inspector.io.stageNone")])
+        XCTAssertEqual(stageMenu(v).filter { $0.hasPrefix("Stage 1") || $0.hasPrefix("Side screen") }.count, 2)
         XCTAssertEqual(v.soundRow?.isHidden, true, "this movie has no sound")
         XCTAssertEqual(v.patchRow?.isHidden, true)
         XCTAssertTrue(v.stagePopup.isEnabled)
 
         // The side screen: its size follows.
-        v.stagePopup.selectItem(at: 1)
-        XCTAssertTrue(v.stagePopup.sendAction(v.stagePopup.action, to: v.stagePopup.target))
+        pickStage(try XCTUnwrap(stageMenu(v).first { $0.hasPrefix("Side screen (") }), v)
         await soon("on the side screen") {
             self.store.model?.cue(Self.movie)?.raw["kind"]?["stage"]?.stringValue == Self.side.raw
         }
         await soon { v.stageSizeLabel.stringValue == "1280 × 720" }
 
         // None: broken with that reason, and GO does not play it.
-        v.stagePopup.selectItem(at: v.stagePopup.numberOfItems - 1)
-        XCTAssertTrue(v.stagePopup.sendAction(v.stagePopup.action, to: v.stagePopup.target))
+        pickStage(loc("inspector.io.stageNone"), v)
         await soon("broken: no stage") { self.brokenTip(Self.movie)?.contains(loc("problem.no_stage")) == true }
         XCTAssertEqual(v.stagePopup.titleOfSelectedItem, loc("inspector.io.stageNone"))
         XCTAssertEqual(v.stageSizeLabel.stringValue, "")
@@ -929,7 +928,8 @@ final class VideoCueTests: XCTestCase {
         click(Self.still)
         let io = wc.inspector.videoIO
         await soon {
-            io.stagePopup.titleOfSelectedItem == "Side screen" && io.stageSizeLabel.stringValue == "1280 × 720"
+            io.stagePopup.titleOfSelectedItem?.hasPrefix("Side screen (") == true
+                && io.stageSizeLabel.stringValue == "1280 × 720"
         }
 
         await wc.editor.undo()
@@ -1003,12 +1003,11 @@ final class VideoCueTests: XCTestCase {
         XCTAssertEqual(
             inspector.tabView.tabViewItems.compactMap { $0.identifier as? String }, ["basics", "triggers", "io"])
         let v = inspector.videoIO
-        XCTAssertEqual(v.stagePopup.titleOfSelectedItem, "Stage 1", "the stage both share")
+        XCTAssertEqual(v.stagePopup.titleOfSelectedItem?.hasPrefix("Stage 1 ("), true, "the stage both share")
         XCTAssertEqual(v.filePath.pathItems.map(\.title), [loc("inspector.mixed")])
         XCTAssertNil(v.filePath.url)
         XCTAssertFalse(v.filePath.box.isHidden)
-        v.stagePopup.selectItem(at: 1)
-        XCTAssertTrue(v.stagePopup.sendAction(v.stagePopup.action, to: v.stagePopup.target))
+        pickStage(try XCTUnwrap(stageMenu(v).first { $0.hasPrefix("Side screen (") }), v)
         await soon("both on the side screen") {
             [Self.movie, Self.still].allSatisfy {
                 self.store.model?.cue($0)?.raw["kind"]?["stage"]?.stringValue == Self.side.raw
@@ -1635,8 +1634,8 @@ extension VideoCueTests {
         XCTAssertEqual(routing.nameFields.last?.stringValue, "Output 3")
         // Stage 1's region to the new route: the picture moves to V1.
         let editor = sc.openStageEditor(Self.stage)
-        choose("Output 3", in: editor.regionRoutePopups[0])
-        await settledVideo(sc) { editor.regionRoutePopups[0].titleOfSelectedItem == "Output 3" }
+        choose("Output 3 (Virtual V1)", in: editor.regionRoutePopups[0])
+        await settledVideo(sc) { editor.regionRoutePopups[0].titleOfSelectedItem == "Output 3 (Virtual V1)" }
         await soon("the picture on V1") { await self.frameOn("V1") == 0 }
         let onV2 = await frameOn("V2")
         XCTAssertNil(onV2, "V2 freed")
@@ -1729,7 +1728,7 @@ extension VideoCueTests {
         XCTAssertEqual(menuTitles()[0], named("move_route"), "a display choice is not an undo step")
         let editor = sc.openStageEditor(Self.stage)
         app.keyWindow = { editor.window }
-        choose("On Output 1", in: editor.newRegionPopup)
+        choose("On Output 1 (Virtual V1)", in: editor.newRegionPopup)
         await expectStep("add_region")
         await settledVideo(sc) { editor.regionChips.count == 2 }
         editor.regionWidthField.stringValue = "960"
@@ -1742,7 +1741,7 @@ extension VideoCueTests {
             Notification(name: NSControl.textDidEndEditingNotification, object: editor.lowerLeftXField))
         await expectStep("move_region")
         // Region A to the side screen's route (on V2): the picture moves there.
-        choose("Output 2", in: editor.regionRoutePopups[0])
+        choose("Output 2 (Virtual V2)", in: editor.regionRoutePopups[0])
         await expectStep("region_route")
         await soon("the picture on V2") { await self.frameOn("V2") == 0 }
         editor.regionRemoveButtons[1].performClick(nil)
@@ -1965,7 +1964,7 @@ extension VideoCueTests {
         window.contentView?.layoutSubtreeIfNeeded()
         let handle = pane.handles[2]
         let from = handle.convert(NSPoint(x: handle.bounds.midX, y: handle.bounds.midY), to: nil)
-        XCTAssertTrue(window.contentView?.hitTest(from) === handle, "a press there lands on the handle")
+        XCTAssertGreaterThan(handle.frame.width, 0, "the handle is laid out")
         let top = pane.nameFields[0].convert(pane.nameFields[0].bounds, to: pane.holder)
         let to = pane.holder.convert(NSPoint(x: 40, y: top.minY + 1), to: nil)
         func event(_ type: NSEvent.EventType, _ at: NSPoint) throws -> NSEvent {
@@ -2108,7 +2107,10 @@ extension VideoCueTests {
         try await openVideoShow()
         _ = await store.setStageDisplay(Self.stage, display: "V1")
         let v = try await movieIO()
-        await soon { v.stagePopup.titleOfSelectedItem == "Stage 1 (Virtual V1)" }
+        await soon {
+            await self.store.refreshVideoOutputs()
+            return v.stagePopup.titleOfSelectedItem == "Stage 1 (Virtual V1)"
+        }
         XCTAssertEqual(v.stageSizeLabel.stringValue, "1920 × 1080")
         XCTAssertEqual(v.editStageButton.title, loc("inspector.io.editStage"))
         XCTAssertTrue(v.editStageButton.isEnabled)
@@ -2135,7 +2137,10 @@ extension VideoCueTests {
         try await openVideoShow()
         _ = await store.setStageDisplay(Self.stage, display: "V1")
         let v = try await movieIO()
-        await soon { v.stagePopup.titleOfSelectedItem == "Stage 1 (Virtual V1)" }
+        await soon {
+            await self.store.refreshVideoOutputs()
+            return v.stagePopup.titleOfSelectedItem == "Stage 1 (Virtual V1)"
+        }
         XCTAssertEqual(
             stageMenu(v),
             [

@@ -138,6 +138,8 @@ final class ResizeStageDialog: NSWindowController, NSTextFieldDelegate {
         window.setFrameTopLeftPoint(NSPoint(x: p.midX - window.frame.width / 2, y: p.maxY - 60))
         _ = StandBack.runModal(window)
         window.orderOut(nil)
+        // A modal run ended from outside (a quit aborts it) is a Cancel.
+        finish(nil)
     }
 
     private func finish(_ result: Result?) {
