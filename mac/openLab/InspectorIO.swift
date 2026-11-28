@@ -527,10 +527,11 @@ extension InspectorViewController {
         fillStageMenu(model: model)
         let current = cue.raw["kind"]?["stage"]?.stringValue
         // A stage that is gone shows no choice.
-        let chosen = v.stageChoices.firstIndex { choice in
-            if case .stage(let id) = choice { return id.raw == current }
-            return current == nil && choice == .none
-        } ?? -1
+        let chosen =
+            v.stageChoices.firstIndex { choice in
+                if case .stage(let id) = choice { return id.raw == current }
+                return current == nil && choice == .none
+            } ?? -1
         if v.stagePopup.indexOfSelectedItem != chosen { v.stagePopup.selectItem(at: chosen) }
         v.stagePopup.isEnabled = !isLocked
         v.stageSizeLabel.stringValue = Self.stageSize(stages.first { $0.id.raw == current })

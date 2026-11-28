@@ -1037,7 +1037,8 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         let f = nameFields[i].convert(nameFields[i].bounds, to: holder)
         let pad = grid.rowSpacing / 2
         selectionBox.frame = NSRect(
-            x: Self.inset / 2, y: f.minY - pad, width: max(0, holder.bounds.width - Self.inset), height: f.height + 2 * pad)
+            x: Self.inset / 2, y: f.minY - pad, width: max(0, holder.bounds.width - Self.inset),
+            height: f.height + 2 * pad)
         selectionBox.isHidden = false
     }
 

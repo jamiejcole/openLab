@@ -73,8 +73,9 @@ final class ResizeStageDialog: NSWindowController, NSTextFieldDelegate {
     }
 
     private func build() -> NSView {
-        for (f, id, key) in [(widthField, "width", "settings.video.width"), (heightField, "height", "settings.video.height")]
-        {
+        for (f, id, key) in [
+            (widthField, "width", "settings.video.width"), (heightField, "height", "settings.video.height"),
+        ] {
             f.setAX("\(Self.id)-\(id)", label: loc(key))
             f.alignment = .right
             f.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)

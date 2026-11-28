@@ -754,7 +754,7 @@ final class VideoSettingsTests: XCTestCase {
     /// #674 flow 1, #813 G6 and #860 B7: a stage's size is changed from its editor's resize dialog,
     /// regions scaled: its row and the editor's size text show the new size, its region follows it
     /// (still the whole stage) and still fills its route on V1, and one undo puts both back.
-    func testStageEditor_resizeScalesRegionsOneUndo() async throws {
+    func testStageEditorResizeScalesRegionsOneUndo() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
         let pane = sc.videoPane
         let routing = sc.videoRoutingPane
@@ -806,7 +806,7 @@ final class VideoSettingsTests: XCTestCase {
     /// #674 flow 2 and #860 B6: the resize dialog has the width and height, the shape box ticked,
     /// the regions' choice and a picture; a size of 0, above the limit, or not a number keeps it up
     /// with the reason and nothing is sent; Cancel changes nothing; the largest size is taken.
-    func testStageEditor_resizeDialogControls() async throws {
+    func testStageEditorResizeDialogControls() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
         let pane = sc.videoPane
         await settled(sc) { pane.sizeLabels.count == 1 }
@@ -841,7 +841,7 @@ final class VideoSettingsTests: XCTestCase {
     /// #860 B8: a stage 1920 x 1080 with region A on its left half and B partly past its right
     /// edge once shrunk; resized to 1280 x 720 keeping the regions' size (crop or pad): each keeps
     /// its pixel size and its place about the centre, cut at the new edges; one undo restores both.
-    func testStageEditor_resizeCropPadKeepsRegions() async throws {
+    func testStageEditorResizeCropPadKeepsRegions() async throws {
         let (rig, sc) = try await openRouted(
             routes: [(route1, "Output 1", 1920, 1080)], width: 1920,
             regions: [(regionA, route1, 0, 960), (regionB, nil, 1500, 400)])
@@ -1218,7 +1218,9 @@ final class VideoSettingsTests: XCTestCase {
         await settled(sc) { routing.shown?.first?.name == "Output 2" }
         XCTAssertEqual(routing.nameFields.map(\.stringValue), ["Output 2", "Output 1"])
         XCTAssertEqual(rig.store.document?.undoName, "move_route")
-        await editorSettled(sc, editor) { self.titles(editor.regionRoutePopups[0]).dropFirst().first == "Output 2 (Virtual V2)" }
+        await editorSettled(sc, editor) {
+            self.titles(editor.regionRoutePopups[0]).dropFirst().first == "Output 2 (Virtual V2)"
+        }
         XCTAssertEqual(
             titles(editor.regionRoutePopups[0]),
             [loc("stageEditor.noRoute"), "Output 2 (Virtual V2)", "Output 1 (Virtual V1)"])
@@ -1232,7 +1234,9 @@ final class VideoSettingsTests: XCTestCase {
         _ = await rig.store.undo()
         await settled(sc) { routing.shown?.first?.name == "Output 1" }
         XCTAssertEqual(routing.nameFields.map(\.stringValue), ["Output 1", "Output 2"])
-        await editorSettled(sc, editor) { self.titles(editor.regionRoutePopups[0]).dropFirst().first == "Output 1 (Virtual V1)" }
+        await editorSettled(sc, editor) {
+            self.titles(editor.regionRoutePopups[0]).dropFirst().first == "Output 1 (Virtual V1)"
+        }
     }
 
     /// A route removed while its editor is up (by another client or an undo): OK is refused with
@@ -1302,7 +1306,9 @@ final class VideoSettingsTests: XCTestCase {
         _ = await rig.store.undo()
         await settled(sc) { routing.shown?.count == 2 && routing.shown?.last?.display == "V2" }
         XCTAssertEqual(routing.displayPopups.last?.titleOfSelectedItem, "Virtual V2 (1280 × 720)")
-        await editorSettled(sc, editor) { editor.regionRoutePopups.last?.titleOfSelectedItem == "Output 2 (Virtual V2)" }
+        await editorSettled(sc, editor) {
+            editor.regionRoutePopups.last?.titleOfSelectedItem == "Output 2 (Virtual V2)"
+        }
         XCTAssertNotNil(editor.canvas.regions[1].route)
         await assertEventually("both halves back") { await self.lowerMiddles() == [self.blue, self.yellow] }
     }
@@ -1349,7 +1355,8 @@ final class VideoSettingsTests: XCTestCase {
         guard case .success = renamed else { return XCTFail("\(renamed)") }
         await editorSettled(sc, editor) { editor.newRegionPopup.itemTitles != titles }
         XCTAssertTrue(
-            editor.newRegionPopup.itemTitles.contains(String(format: loc("stageEditor.newRegionOn"), "Front (Virtual V1)")))
+            editor.newRegionPopup.itemTitles.contains(
+                String(format: loc("stageEditor.newRegionOn"), "Front (Virtual V1)")))
         // The new menu works: a region on the renamed route.
         choose(String(format: loc("stageEditor.newRegionOn"), "Front (Virtual V1)"), in: editor.newRegionPopup)
         await editorSettled(sc, editor) { editor.regionChips.count == 3 }
@@ -2218,7 +2225,7 @@ extension VideoSettingsTests {
     /// A1: three stages → each row has a handle, a stage icon, the name in an editable field, the
     /// size as "W × H", where it goes, Edit, Monitor and remove at the right, in that order; the
     /// titles above name the name, resolution and destinations columns.
-    func testVideoOutputs_rowLayoutHasAllControls() async throws {
+    func testVideoOutputsRowLayoutHasAllControls() async throws {
         let (_, sc) = try await openThree()
         let pane = sc.videoPane
         let window = try XCTUnwrap(sc.window)
@@ -2226,7 +2233,8 @@ extension VideoSettingsTests {
         window.contentView?.layoutSubtreeIfNeeded()
         XCTAssertEqual(pane.cols, [.handle, .name, .size, .devices, .edit, .monitor, .remove])
         XCTAssertEqual(
-            pane.cols.map { loc("settings.video.col.\($0.key)") }, ["", "Name", "Resolution", "Destinations", "", "", ""])
+            pane.cols.map { loc("settings.video.col.\($0.key)") },
+            ["", "Name", "Resolution", "Destinations", "", "", ""])
         XCTAssertEqual(pane.handles.count, 3)
         XCTAssertEqual(pane.nameFields.map(\.stringValue), ["Stage 1", "Stage 2", "Stage 3"])
         XCTAssertTrue(pane.nameFields.allSatisfy(\.isEditable))
@@ -2252,7 +2260,7 @@ extension VideoSettingsTests {
     /// A2: a stage none of whose regions goes to a route says it goes nowhere in its destinations
     /// column (no warning line); one whose region goes to a route names that route's display; one
     /// on a route with no display here names the route as having none and warns.
-    func testVideoOutputs_noRouteShowsNoDestinations() async throws {
+    func testVideoOutputsNoRouteShowsNoDestinations() async throws {
         let (rig, sc) = try await openThree()
         let pane = sc.videoPane
         guard
@@ -2271,7 +2279,7 @@ extension VideoSettingsTests {
 
     /// A5: the add-stage pop-up → its title names Command-N; an empty stage, then under a heading a
     /// stage on each route named with its display; nothing for partial or multiple outputs.
-    func testVideoOutputs_addPopupItems() async throws {
+    func testVideoOutputsAddPopupItems() async throws {
         let (_, sc) = try await openThree()
         let pane = sc.videoPane
         await settled(sc) { self.titles(pane.addPopup).count == 6 }
@@ -2288,7 +2296,7 @@ extension VideoSettingsTests {
 
     /// A6: the empty stage picked → a row "Stage 4", 1920 x 1080, going nowhere, selected, and its
     /// editor opens by itself with no region, nothing selected and a dash in every region field.
-    func testVideoOutputs_emptyStageOpensEditor() async throws {
+    func testVideoOutputsEmptyStageOpensEditor() async throws {
         let (rig, sc) = try await openThree()
         let pane = sc.videoPane
         choose(loc("settings.video.addEmpty"), in: pane.addPopup)
@@ -2318,7 +2326,7 @@ extension VideoSettingsTests {
 
     /// A7: the stage on Output 1 picked → a row sized as Output 1, selected, naming its display; no
     /// editor opens; its editor opened later shows one region A on Output 1 covering the stage.
-    func testVideoOutputs_stageOnRouteDoesNotOpenEditor() async throws {
+    func testVideoOutputsStageOnRouteDoesNotOpenEditor() async throws {
         let (_, sc) = try await openThree()
         let pane = sc.videoPane
         choose("   Output 1 (Virtual V1)", in: pane.addPopup)
@@ -2336,7 +2344,7 @@ extension VideoSettingsTests {
 
     /// A8: Command-N on Video Outputs (nothing being typed) opens its add pop-up; on Output Routing
     /// that page's; on another page it goes on to the menu.
-    func testVideoOutputs_commandNOpensAddPopup() async throws {
+    func testVideoOutputsCommandNOpensAddPopup() async throws {
         let (_, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
         var opened: [NSPopUpButton] = []
         sc.videoPane.openAddMenu = { opened.append($0) }
@@ -2361,7 +2369,7 @@ extension VideoSettingsTests {
 
     /// A9: a row's Edit → that stage's editor window opens; a second Edit brings the same window
     /// forward (no second one); Monitor opens the stage's monitor window.
-    func testVideoOutputs_editAndMonitorButtons() async throws {
+    func testVideoOutputsEditAndMonitorButtons() async throws {
         let (rig, sc) = try await openThree()
         let pane = sc.videoPane
         pane.editButtons[1].performClick(nil)
@@ -2379,7 +2387,7 @@ extension VideoSettingsTests {
     }
 
     /// A11: Show Mode on → the list, the add pop-up, a reorder, a rename and a remove all work.
-    func testVideoOutputs_editableInShowMode() async throws {
+    func testVideoOutputsEditableInShowMode() async throws {
         let (rig, sc) = try await openThree()
         let pane = sc.videoPane
         _ = await rig.store.setShowMode(true).value
@@ -2401,7 +2409,7 @@ extension VideoSettingsTests {
 
     /// A12: the settings window at its least size → the name and destinations columns give way;
     /// Edit, Monitor and remove stay whole inside the table, where a click reaches them.
-    func testVideoOutputs_narrowWindowKeepsButtons() async throws {
+    func testVideoOutputsNarrowWindowKeepsButtons() async throws {
         let (_, sc) = try await openThree()
         let pane = sc.videoPane
         let window = try XCTUnwrap(sc.window)
@@ -2430,7 +2438,7 @@ extension VideoSettingsTests {
     /// name, layer, keep-black box, size text and its button at the top; the region table, the
     /// region box, the new-region pop-up and the canvas below; the guides box and the scale pop-up
     /// at the foot.
-    func testStageEditor_opensAsWindowWithAllAreas() async throws {
+    func testStageEditorOpensAsWindowWithAllAreas() async throws {
         let (_, sc) = try await openG4()
         await settled(sc) { sc.videoPane.editButtons.count == 1 }
         sc.videoPane.editButtons[0].performClick(nil)
@@ -2462,7 +2470,7 @@ extension VideoSettingsTests {
     /// B3: a new stage's layer reads the top's word; the stepper down gives 999, 998; 1000 typed
     /// shows the top's word again; 0 typed or stepped to shows the bottom's word; a non-number or
     /// one above 1000 is refused and the old value stays.
-    func testStageEditor_layerFieldWordsAndStepper() async throws {
+    func testStageEditorLayerFieldWordsAndStepper() async throws {
         let (rig, sc) = try await openThree()
         choose(loc("settings.video.addEmpty"), in: sc.videoPane.addPopup)
         await settled(sc) { sc.videoPane.shown?.count == 4 }
@@ -2502,7 +2510,7 @@ extension VideoSettingsTests {
 
     /// B4: a new stage's keep-black box is ticked; unticking it sets the stage's keep-black off at
     /// once (one undo step), ticking it puts it back (the black itself: Q819, engine video tests).
-    func testStageEditor_keepBlackBox() async throws {
+    func testStageEditorKeepBlackBox() async throws {
         let (rig, sc) = try await openThree()
         choose(loc("settings.video.addEmpty"), in: sc.videoPane.addPopup)
         await settled(sc) { sc.videoPane.shown?.count == 4 }
@@ -2519,7 +2527,7 @@ extension VideoSettingsTests {
 
     /// B5: the size is plain text with a button beside it: it cannot be typed in or selected, and a
     /// click on it does nothing.
-    func testStageEditor_sizeIsReadOnlyText() async throws {
+    func testStageEditorSizeIsReadOnlyText() async throws {
         let (rig, sc) = try await openG4()
         let editor = sc.openStageEditor(ModelID(stageA))
         let window = try XCTUnwrap(editor.window)
@@ -2538,7 +2546,7 @@ extension VideoSettingsTests {
     /// B9: the region table: each row has its letter, colour dot, a thumbnail with its region lit,
     /// its route pop-up and a remove button; a click on a row selects its region, the row drawn
     /// selected and the canvas drawing it darker.
-    func testStageEditor_regionTableRows() async throws {
+    func testStageEditorRegionTableRows() async throws {
         let (_, sc) = try await openG4()
         let editor = sc.openStageEditor(ModelID(stageA))
         await editorSettled(sc, editor) { editor.regionRows.count == 2 }
@@ -2547,7 +2555,8 @@ extension VideoSettingsTests {
         XCTAssertEqual(editor.regionChips.map(\.colour), [RegionColour.of(0), RegionColour.of(1)])
         XCTAssertEqual(editor.regionThumbnails.map(\.colour), editor.regionChips.map(\.colour))
         XCTAssertEqual(
-            editor.regionThumbnails.map(\.bounds_), editor.regions.map(\.bounds), "each thumbnail lights its region")
+            editor.regionThumbnails.map(\.regionBounds), editor.regions.map(\.bounds),
+            "each thumbnail lights its region")
         let thumb = editor.regionThumbnails[1]
         XCTAssertEqual(thumb.regionFrame.minX, thumb.stageFrame.midX, accuracy: 0.5, "B: the right half")
         XCTAssertEqual(editor.regionRoutePopups.count, 2)
@@ -2566,7 +2575,7 @@ extension VideoSettingsTests {
     /// B10: a region's route pop-up lists none, a separator, then every route named with its
     /// display and its rotation, the current one chosen; picking another moves the canvas label to
     /// it and undo moves it back.
-    func testStageEditor_routePopupNamesAndPick() async throws {
+    func testStageEditorRoutePopupNamesAndPick() async throws {
         let (rig, sc) = try await openG4()
         let editor = sc.openStageEditor(ModelID(stageA))
         guard
@@ -2594,7 +2603,7 @@ extension VideoSettingsTests {
     /// B11 and #813 G2: the new-region pop-up → a route picked: region B covers the whole stage on
     /// that route, selected; undo removes it. On a stage with no route a region with none can still
     /// be added.
-    func testStageEditor_newRegionCoversStage() async throws {
+    func testStageEditorNewRegionCoversStage() async throws {
         let (rig, sc) = try await openRouted(
             routes: [(route1, "Output 1", 1920, 1080), (route2, "Output 2", 1280, 720)], width: 1920,
             regions: [(regionA, route1, 0, 1920)], displays: [(route1, "V1"), (route2, "V2")])
@@ -2626,7 +2635,7 @@ extension VideoSettingsTests {
 
     /// B12: region B (the whole of a 1920 x 1080 stage) selected → its box shows its size with the
     /// lock between, its lower left from the stage's centre (y up) and its upper right, read only.
-    func testStageEditor_regionBoxValues() async throws {
+    func testStageEditorRegionBoxValues() async throws {
         let (_, sc) = try await openRouted(
             routes: [(route1, "Output 1", 1920, 1080)], width: 1920,
             regions: [(regionA, route1, 0, 960), (regionB, route1, 0, 1920)])
@@ -2649,7 +2658,7 @@ extension VideoSettingsTests {
     /// B13: the lock off, region B (the whole stage) → width 960: B keeps its lower-left corner
     /// (-960, -540), its upper right becomes 0, 540 and the canvas hatches its overlap with A;
     /// height 540 then gives an upper right of 0, 0. One undo per field.
-    func testStageEditor_typingSizeKeepsLowerLeft() async throws {
+    func testStageEditorTypingSizeKeepsLowerLeft() async throws {
         let (rig, sc) = try await openRouted(
             routes: [(route1, "Output 1", 1920, 1080)], width: 1920,
             regions: [(regionA, route1, 0, 1920), (regionB, route1, 0, 1920)])
@@ -2676,7 +2685,7 @@ extension VideoSettingsTests {
 
     /// B14: the lock on, a 1920 x 1080 region → width 960 sets the height to 540 too, one step; the
     /// lock is the window's own (not saved, no undo step).
-    func testStageEditor_aspectLockLinksSize() async throws {
+    func testStageEditorAspectLockLinksSize() async throws {
         let (rig, sc) = try await openRouted(
             routes: [(route1, "Output 1", 1920, 1080)], width: 1920, regions: [(regionA, route1, 0, 1920)])
         let editor = sc.openStageEditor(ModelID(stageA))
@@ -2697,7 +2706,7 @@ extension VideoSettingsTests {
 
     /// B15 and #813 G3: a corner or size that would put the region past the stage's edge is refused
     /// with a message and the field shows the old value; the region is unchanged and nothing sent.
-    func testStageEditor_cornerOutsideStageRefused() async throws {
+    func testStageEditorCornerOutsideStageRefused() async throws {
         let (rig, sc) = try await openG4()
         let editor = sc.openStageEditor(ModelID(stageA))
         editor.regionRows[1].mouseDown(with: try press(editor))
@@ -2729,7 +2738,7 @@ extension VideoSettingsTests {
 
     /// B16: no region selected (its last region removed) → every region field a dash and off, the
     /// box's heading saying none is chosen.
-    func testStageEditor_noSelectionShowsDashes() async throws {
+    func testStageEditorNoSelectionShowsDashes() async throws {
         let (_, sc) = try await openRouted(
             routes: [(route1, "Output 1", 1920, 1080)], width: 1920, regions: [(regionA, route1, 0, 1920)])
         let editor = sc.openStageEditor(ModelID(stageA))
@@ -2750,7 +2759,7 @@ extension VideoSettingsTests {
     /// B17: the canvas: the stage outline with its name and size in the middle; each routed region
     /// in its colour labelled "A → Output 1"; the selected one darker; a click on a region selects
     /// it and its row.
-    func testStageEditor_canvasDrawsRegionsAndLabels() async throws {
+    func testStageEditorCanvasDrawsRegionsAndLabels() async throws {
         let (_, sc) = try await openG4()
         let editor = sc.openStageEditor(ModelID(stageA))
         let window = try XCTUnwrap(editor.window)
@@ -2776,7 +2785,7 @@ extension VideoSettingsTests {
 
     /// B18: a region with no route is drawn lighter with a dashed outline, labelled by its letter
     /// alone.
-    func testStageEditor_noRouteRegionDashedLetterOnly() async throws {
+    func testStageEditorNoRouteRegionDashedLetterOnly() async throws {
         let (_, sc) = try await openRouted(
             routes: [(route1, "Output 1", 1920, 1080)], width: 3840,
             regions: [(regionA, route1, 0, 1920), (regionB, nil, 1920, 1920)])
@@ -2788,7 +2797,7 @@ extension VideoSettingsTests {
 
     /// B19: the scale pop-up at the foot lists fit, then percentages up to 400; 50 draws the
     /// stage at half its pixels, scrolled when it is larger than the pane; fit fills the pane again.
-    func testStageEditor_scalePopupFitAndPercent() async throws {
+    func testStageEditorScalePopupFitAndPercent() async throws {
         let (_, sc) = try await openRouted(
             routes: [(route1, "Output 1", 1920, 1080)], width: 3840, regions: [(regionA, route1, 0, 3840)])
         let editor = sc.openStageEditor(ModelID(stageA))
@@ -2811,7 +2820,7 @@ extension VideoSettingsTests {
 
     /// B20: the guides box at the foot is off and unticked while no region has a route; one routed
     /// region turns it on, and a click shows that route's guides as its row's box does.
-    func testStageEditor_guidesBoxDisabledWithoutRoutes() async throws {
+    func testStageEditorGuidesBoxDisabledWithoutRoutes() async throws {
         let (rig, sc) = try await openRouted(
             routes: [(route1, "Output 1", 1920, 1080)], width: 1920, regions: [(regionA, nil, 0, 1920)],
             displays: [(route1, "V1")])
@@ -2829,7 +2838,7 @@ extension VideoSettingsTests {
 
     /// B22: a stage's editor open, the stage removed on Video Outputs → the editor closes; undo
     /// brings the stage back without opening it again.
-    func testStageEditor_closesWhenStageRemoved() async throws {
+    func testStageEditorClosesWhenStageRemoved() async throws {
         let (rig, sc) = try await openThree()
         let pane = sc.videoPane
         pane.editButtons[1].performClick(nil)
@@ -2847,7 +2856,7 @@ extension VideoSettingsTests {
     }
 
     /// B23: Show Mode on → the editor opens and edits as in Edit mode.
-    func testStageEditor_editableInShowMode() async throws {
+    func testStageEditorEditableInShowMode() async throws {
         let (rig, sc) = try await openG4()
         _ = await rig.store.setShowMode(true).value
         await settled(sc) { rig.store.showMode }
@@ -2868,7 +2877,7 @@ extension VideoSettingsTests {
 
     /// B24: the editor at its least size: the region box, the canvas and the foot stay inside the
     /// window, no control is cut, and the canvas fits the stage under "fit".
-    func testStageEditor_narrowWindowNoClipping() async throws {
+    func testStageEditorNarrowWindowNoClipping() async throws {
         let (_, sc) = try await openG4()
         let editor = sc.openStageEditor(ModelID(stageA))
         let window = try XCTUnwrap(editor.window)
@@ -2907,7 +2916,7 @@ extension VideoSettingsTests {
     /// C1: a route row's Edit → a dialog window of its own (not a sheet on the settings window),
     /// titled for editing the route: name, size with the take-the-display's-size button, rotation,
     /// scaling with one line under it, the display and its size, Cancel and OK.
-    func testRouteEditor_opensAsModalWindow() async throws {
+    func testRouteEditorOpensAsModalWindow() async throws {
         let (_, sc) = try await openG4()
         await settled(sc) { sc.videoRoutingPane.editButtons.count == 2 }
         let editor = try routeEditor(sc)
@@ -2931,7 +2940,7 @@ extension VideoSettingsTests {
 
     /// C2: a 3840 x 2160 display chosen → the take-the-display's-size button makes the size 3840 x
     /// 2160; Cancel leaves the route as it was.
-    func testRouteEditor_setSizeFromDisplay() async throws {
+    func testRouteEditorSetSizeFromDisplay() async throws {
         engine.stop()
         engine = try await TestEngine.start(displays: "V1:1920x1080,V2:3840x2160")
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
@@ -2951,7 +2960,7 @@ extension VideoSettingsTests {
 
     /// C3: rotation 0 and 1920 x 1080 → 90 makes the size 1080 x 1920; 270 from 90 leaves it; 0 from
     /// 270 swaps it back; 180 from 0 leaves it.
-    func testRouteEditor_rotation90Swaps() async throws {
+    func testRouteEditorRotation90Swaps() async throws {
         let (_, sc) = try await openG4()
         await settled(sc) { sc.videoRoutingPane.editButtons.count == 2 }
         let editor = try routeEditor(sc)
@@ -2968,7 +2977,7 @@ extension VideoSettingsTests {
 
     /// C4: OK on a turned route → its stage's regions are as they were (sizes and places), and the
     /// stage editor names the route with its rotation.
-    func testRouteEditor_rotationDoesNotChangeRegions() async throws {
+    func testRouteEditorRotationDoesNotChangeRegions() async throws {
         let (rig, sc) = try await openG4()
         await settled(sc) { sc.videoRoutingPane.editButtons.count == 2 }
         let stageEditor = sc.openStageEditor(ModelID(stageA))
@@ -2987,7 +2996,7 @@ extension VideoSettingsTests {
 
     /// C5: the scaling pop-up lists centre, fit, stretch and fill (fill for a new route); each
     /// choice has its own line under it, our own words.
-    func testRouteEditor_scalingPopupAndExplanation() async throws {
+    func testRouteEditorScalingPopupAndExplanation() async throws {
         let (_, sc) = try await openG4()
         let routing = sc.videoRoutingPane
         choose(loc("settings.video.addRouteNone"), in: routing.addPopup)
@@ -3009,7 +3018,7 @@ extension VideoSettingsTests {
 
     /// C6: the display pop-up and its size, read only: a display picked shows its size; none shows
     /// none chosen and the route's own size.
-    func testRouteEditor_displayPopupAndReadOnlySize() async throws {
+    func testRouteEditorDisplayPopupAndReadOnlySize() async throws {
         let (_, sc) = try await openG4()
         await settled(sc) { sc.videoRoutingPane.editButtons.count == 2 }
         let editor = try routeEditor(sc, 1)
@@ -3028,7 +3037,7 @@ extension VideoSettingsTests {
 
     /// C7: OK with the name, size, rotation and scaling changed → one undo step; the display picked
     /// is this Mac's and no undo step; Cancel (and Esc, its key) applies nothing.
-    func testRouteEditor_okOneUndoCancelNothing() async throws {
+    func testRouteEditorOkOneUndoCancelNothing() async throws {
         let (rig, sc) = try await openG4()
         let routing = sc.videoRoutingPane
         await settled(sc) { routing.editButtons.count == 2 }
@@ -3067,7 +3076,7 @@ extension VideoSettingsTests {
 
     /// C8: an empty name, or a size outside 1 to 30000 → the dialog stays up saying why; OK does
     /// not take it down.
-    func testRouteEditor_invalidInputKeepsDialog() async throws {
+    func testRouteEditorInvalidInputKeepsDialog() async throws {
         let (rig, sc) = try await openG4()
         await settled(sc) { sc.videoRoutingPane.editButtons.count == 2 }
         let editor = try routeEditor(sc)
@@ -3089,7 +3098,7 @@ extension VideoSettingsTests {
     }
 
     /// C9: Show Mode on → the route editor opens and OK applies.
-    func testRouteEditor_worksInShowMode() async throws {
+    func testRouteEditorWorksInShowMode() async throws {
         let (rig, sc) = try await openG4()
         _ = await rig.store.setShowMode(true).value
         await settled(sc) { rig.store.showMode && sc.videoRoutingPane.editButtons.count == 2 }
@@ -3107,7 +3116,7 @@ extension VideoSettingsTests {
     /// E1: Stage 1 with regions A and B on Output 1 → Output 1 removed (no question): the stage's
     /// row says it goes nowhere; its open editor shows both route pop-ups at none, the regions
     /// dashed and labelled by letter only, the guides box off.
-    func testRoutes_removeLeavesRegionsWithNoRoute() async throws {
+    func testRoutesRemoveLeavesRegionsWithNoRoute() async throws {
         let (rig, sc) = try await openRouted(
             routes: [(route1, "Output 1", 1920, 1080)], width: 3840,
             regions: [(regionA, route1, 0, 1920), (regionB, route1, 1920, 1920)], displays: [(route1, "V1")])
@@ -3129,7 +3138,7 @@ extension VideoSettingsTests {
     }
 
     /// E2: undo after the removal → the route is back on its display and both regions on it.
-    func testRoutes_undoRestoresRegions() async throws {
+    func testRoutesUndoRestoresRegions() async throws {
         let (rig, sc) = try await openRouted(
             routes: [(route1, "Output 1", 1920, 1080)], width: 3840,
             regions: [(regionA, route1, 0, 1920), (regionB, route1, 1920, 1920)], displays: [(route1, "V1")])

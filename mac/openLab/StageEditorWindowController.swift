@@ -477,7 +477,7 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
             regionChips[i].isSelected = r.id == selected
             regionRows[i].isSelected = r.id == selected
             regionThumbnails[i].stageSize = NSSize(width: width, height: height)
-            regionThumbnails[i].bounds_ = r.bounds
+            regionThumbnails[i].regionBounds = r.bounds
         }
         fillNewRegionPopup()
         let index = regions.firstIndex { $0.id == selected }
@@ -560,7 +560,7 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
             let thumbnail = RegionThumbnail()
             thumbnail.colour = RegionColour.of(i)
             thumbnail.stageSize = NSSize(width: width, height: height)
-            thumbnail.bounds_ = r.bounds
+            thumbnail.regionBounds = r.bounds
             thumbnail.setAX(
                 "\(Self.id)-region-thumbnail-\(n)", label: String(format: loc("stageEditor.thumbnail.ax"), letter))
             let popup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -711,7 +711,9 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
             // The stage's centre in view, as a zoom does.
             let room = canvasScroll.contentView.bounds.size
             canvas.scroll(
-                NSPoint(x: max(0, (canvas.frame.width - room.width) / 2), y: max(0, (canvas.frame.height - room.height) / 2)))
+                NSPoint(
+                    x: max(0, (canvas.frame.width - room.width) / 2), y: max(0, (canvas.frame.height - room.height) / 2)
+                ))
         }
     }
 
@@ -895,12 +897,14 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
             if field === regionWidthField {
                 b.width = side
                 if locked {
-                    b.height = max(1, Int((Double(side) * Double(region.bounds.height) / Double(region.bounds.width)).rounded()))
+                    b.height = max(
+                        1, Int((Double(side) * Double(region.bounds.height) / Double(region.bounds.width)).rounded()))
                 }
             } else {
                 b.height = side
                 if locked {
-                    b.width = max(1, Int((Double(side) * Double(region.bounds.width) / Double(region.bounds.height)).rounded()))
+                    b.width = max(
+                        1, Int((Double(side) * Double(region.bounds.width) / Double(region.bounds.height)).rounded()))
                 }
             }
             // The lower-left corner stays where it is.
@@ -984,7 +988,7 @@ final class RegionRowView: NSStackView {
 final class RegionThumbnail: NSView {
     var stageSize = NSSize(width: 1920, height: 1080) { didSet { needsDisplay = true } }
     /// The region, in stage pixels from the top left.
-    var bounds_ = RegionBounds(x: 0, y: 0, width: 1920, height: 1080) { didSet { needsDisplay = true } }
+    var regionBounds = RegionBounds(x: 0, y: 0, width: 1920, height: 1080) { didSet { needsDisplay = true } }
     var colour = NSColor.systemBlue { didSet { needsDisplay = true } }
 
     static let size = NSSize(width: 48, height: 28)
@@ -1008,8 +1012,8 @@ final class RegionThumbnail: NSView {
         let sx = s.width / stageSize.width
         let sy = s.height / stageSize.height
         return NSRect(
-            x: s.minX + CGFloat(bounds_.x) * sx, y: s.minY + CGFloat(bounds_.y) * sy,
-            width: CGFloat(bounds_.width) * sx, height: CGFloat(bounds_.height) * sy)
+            x: s.minX + CGFloat(regionBounds.x) * sx, y: s.minY + CGFloat(regionBounds.y) * sy,
+            width: CGFloat(regionBounds.width) * sx, height: CGFloat(regionBounds.height) * sy)
     }
 
     override func draw(_ dirtyRect: NSRect) {

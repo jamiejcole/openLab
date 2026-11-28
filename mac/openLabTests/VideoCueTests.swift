@@ -1952,7 +1952,7 @@ extension VideoCueTests {
 
     /// A3: three stages → row 3 dragged by its handle above row 1: the rows reorder at once and the
     /// cue's stage pop-up lists the new order; one undo puts it back, redo moves it again.
-    func testVideoOutputs_dragReordersStagesOneUndo() async throws {
+    func testVideoOutputsDragReordersStagesOneUndo() async throws {
         try await openVideoShow()
         let sc = await videoSettings()
         let pane = sc.videoPane
@@ -1999,7 +1999,7 @@ extension VideoCueTests {
     /// A4: a stage's name typed in its row and Return → the row, the stage editor's title and the
     /// Video cue's pop-up show it; undo puts the old name back; an empty name is refused, the old
     /// name staying.
-    func testVideoOutputs_nameTypedInPlace() async throws {
+    func testVideoOutputsNameTypedInPlace() async throws {
         try await openVideoShow()
         let sc = await videoSettings()
         let pane = sc.videoPane
@@ -2027,7 +2027,7 @@ extension VideoCueTests {
     /// A10: Stage 1's remove button with its cues idle → the row goes at once, no question; the cue
     /// on it is broken naming the stage it misses; undo brings the stage back and mends the cue.
     /// (With a cue playing on it the removal is refused with the reason, Q570.)
-    func testVideoOutputs_removeImmediateUndoable() async throws {
+    func testVideoOutputsRemoveImmediateUndoable() async throws {
         try await openVideoShow()
         let sc = await videoSettings()
         let pane = sc.videoPane
@@ -2048,7 +2048,7 @@ extension VideoCueTests {
 
     /// B2: a name typed in the stage editor → the Video Outputs row, the window's title and the
     /// cue's pop-up follow; one undo restores the name everywhere.
-    func testStageEditor_renameUpdatesEverywhere() async throws {
+    func testStageEditorRenameUpdatesEverywhere() async throws {
         try await openVideoShow()
         let sc = await videoSettings()
         let pane = sc.videoPane
@@ -2070,7 +2070,7 @@ extension VideoCueTests {
 
     /// B21: a still playing on Stage 1 (on V1) → its region typed to the stage's left half in the
     /// editor: V1 shows that half (the region fills its route) while the cue plays on, no alert.
-    func testStageEditor_editWhilePlayingFollows() async throws {
+    func testStageEditorEditWhilePlayingFollows() async throws {
         try await openVideoShow()
         await soon { self.store.mediaDurations[Self.still]?.picture?.type == "still" }
         _ = await store.setStageDisplay(Self.stage, display: "V1")
@@ -2103,7 +2103,7 @@ extension VideoCueTests {
 
     /// D1: the movie's I/O tab → the stage pop-up shows its stage with where it goes in brackets;
     /// beside it Monitor, the stage's size and Edit.
-    func testVideoCueIO_stageRowLayout() async throws {
+    func testVideoCueIOStageRowLayout() async throws {
         try await openVideoShow()
         _ = await store.setStageDisplay(Self.stage, display: "V1")
         let v = try await movieIO()
@@ -2133,7 +2133,7 @@ extension VideoCueTests {
     /// D2: the stage pop-up's menu → none, a separator, the stages' heading (not chosen), each stage
     /// with where it goes, a separator, the item opening Video settings, and a submenu of new
     /// stages: empty, and one per route.
-    func testVideoCueIO_stagePopupItems() async throws {
+    func testVideoCueIOStagePopupItems() async throws {
         try await openVideoShow()
         _ = await store.setStageDisplay(Self.stage, display: "V1")
         let v = try await movieIO()
@@ -2158,7 +2158,7 @@ extension VideoCueTests {
 
     /// D3: a stage picked → the cue is on it and the size beside it follows; undo restores. None
     /// picked → the pop-up shows none and no size.
-    func testVideoCueIO_pickStageAndUnpatched() async throws {
+    func testVideoCueIOPickStageAndUnpatched() async throws {
         try await openVideoShow()
         let v = try await movieIO()
         let side = try XCTUnwrap(stageMenu(v).first { $0.hasPrefix("Side screen (") })
@@ -2178,7 +2178,7 @@ extension VideoCueTests {
 
     /// D4: the Video settings item → the settings window opens on Video Outputs; the cue's pop-up
     /// still shows its stage and nothing is sent.
-    func testVideoCueIO_openVideoSettingsItem() async throws {
+    func testVideoCueIOOpenVideoSettingsItem() async throws {
         try await openVideoShow()
         let v = try await movieIO()
         let before = v.stagePopup.titleOfSelectedItem
@@ -2194,7 +2194,7 @@ extension VideoCueTests {
     /// D5: the new-stage submenu's empty stage → a stage is added and the cue put on it, one undo
     /// step, its editor not opened; a route's entry makes a stage on that route sized as it and puts
     /// the cue on it.
-    func testVideoCueIO_newStageSubmenu() async throws {
+    func testVideoCueIONewStageSubmenu() async throws {
         try await openVideoShow()
         let v = try await movieIO()
         func newStage(_ title: String) throws {
@@ -2222,7 +2222,7 @@ extension VideoCueTests {
 
     /// D6: Edit beside the pop-up → the stage's editor opens; Monitor opens its monitor; with the
     /// cue on no stage both are off.
-    func testVideoCueIO_editAndMonitorButtons() async throws {
+    func testVideoCueIOEditAndMonitorButtons() async throws {
         try await openVideoShow()
         let v = try await movieIO()
         v.editStageButton.performClick(nil)
@@ -2240,7 +2240,7 @@ extension VideoCueTests {
 
     /// D7: a stage whose route has no display on this Mac → its item says so in its brackets, and a
     /// cue on it plays without being marked broken.
-    func testVideoCueIO_stageWithoutDisplayNote() async throws {
+    func testVideoCueIOStageWithoutDisplayNote() async throws {
         try await openVideoShow()
         await soon { self.store.mediaDurations[Self.still]?.picture?.type == "still" }
         let v = try await movieIO()
@@ -2254,7 +2254,7 @@ extension VideoCueTests {
 
     /// E3: a still playing on Stage 1 through Output 1 on V1 → Output 1 removed on Output Routing:
     /// the cue keeps running, its picture leaves V1, no alert.
-    func testRoutes_removeWhilePlayingKeepsCueRunning() async throws {
+    func testRoutesRemoveWhilePlayingKeepsCueRunning() async throws {
         try await openVideoShow()
         await soon { self.store.mediaDurations[Self.still]?.picture?.type == "still" }
         _ = await store.setStageDisplay(Self.stage, display: "V1")
