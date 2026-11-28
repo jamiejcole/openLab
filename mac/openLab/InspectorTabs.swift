@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import AppKit
+import UniformTypeIdentifiers
 
 /// Which inspector tabs a cue kind has, in order. Basics and Triggers come first for every kind, then
 /// the kind's own tabs as QLab orders them; a tab view only ever holds this list for the shown cue.
@@ -347,13 +348,45 @@ final class TargetPathControl: NSPathControl {
     /// Shows a file's folders and name (the control hides for none); the tooltip holds the whole path.
     func show(url: URL?) {
         isHidden = url == nil
-        if let url, self.url != url {
-            self.url = url
-            setFullItems(InspectorViewController.shownPathItems(pathItems, of: url))
-        } else if url == nil {
-            self.url = nil
-        }
+        if self.url != url { self.url = url }
         toolTip = url?.path
+    }
+
+    private var shownURL: URL?
+
+    /// The file shown. Setting it builds the items from the path's own components and generic icons:
+    /// `NSPathControl.url` reads every component's icon from disk on the main thread, which stalls the
+    /// inspector on a volume that has stopped answering.
+    override var url: URL? {
+        get { shownURL }
+        set {
+            shownURL = newValue
+            guard let newValue else {
+                setFullItems([])
+                return
+            }
+            let names = newValue.standardizedFileURL.pathComponents.filter { $0 != "/" }
+            let items = names.enumerated().map { (index, name) -> NSPathControlItem in
+                let item = NSPathControlItem()
+                item.title = name
+                item.image = Self.icon(forExtension: index == names.count - 1 ? (name as NSString).pathExtension : nil)
+                return item
+            }
+            setFullItems(InspectorViewController.shownPathItems(items, of: newValue))
+        }
+    }
+
+    private static var iconCache: [String: NSImage] = [:]
+
+    /// The generic icon of a folder (`nil`) or of a file type; cached, and read from no file.
+    private static func icon(forExtension ext: String?) -> NSImage {
+        let key = ext?.lowercased() ?? "\u{0}folder"
+        if let cached = iconCache[key] { return cached }
+        let type = ext.flatMap { UTType(filenameExtension: $0) } ?? (ext == nil ? .folder : .data)
+        let image = NSWorkspace.shared.icon(for: type)
+        image.size = NSSize(width: 16, height: 16)
+        iconCache[key] = image
+        return image
     }
 
     /// The file's path is the value VoiceOver reads and a test finds the file by.
