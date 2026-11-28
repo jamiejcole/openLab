@@ -82,7 +82,16 @@ extension InspectorViewController {
             let item = byID[shown] ?? tabItems[shown]
         {
             if item.tabView !== tabView { tabView.addTabViewItem(item) }
-            if tabView.selectedTabViewItem !== item { tabView.selectTabViewItem(item) }
+            if tabView.selectedTabViewItem !== item {
+                // A switch away from a tab holding the focus would hand it to the new tab's first field;
+                // the keys go back to the list instead, as when that tab was taken out.
+                if let window = tabView.window, let focused = window.firstResponder as? NSView,
+                    focused.isDescendant(of: tabView)
+                {
+                    window.makeFirstResponder(nil)
+                }
+                tabView.selectTabViewItem(item)
+            }
         }
         let kept = tabView.selectedTabViewItem.flatMap { ($0.identifier as? String).map(wanted.contains) } == true
         for item in tabView.tabViewItems where !(kept && item === tabView.selectedTabViewItem) {
