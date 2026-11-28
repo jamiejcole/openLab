@@ -47,7 +47,8 @@ hdiutil_retry() {
 }
 
 rm -f "$dmg"
-hdiutil_retry create -volname "$volname" -srcfolder "$stage" -fs HFS+ -format UDZO "$dmg"
+# -ov: a busy attempt that left a part-written image does not make the retry fail with "File exists".
+hdiutil_retry create -ov -volname "$volname" -srcfolder "$stage" -fs HFS+ -format UDZO "$dmg"
 hdiutil verify "$dmg"
 "$(dirname "$0")/check-dmg.sh" "$dmg"
 echo "make-dmg: $dmg"

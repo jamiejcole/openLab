@@ -14,10 +14,10 @@ GitHub issues and milestones.
 openLab is not signed or notarized: that needs a paid Apple developer account, which this project does not have. macOS therefore blocks it the first time you open it. Before you override that, check that the disk image came from this project's release page on GitHub; if you got it anywhere else, do not open it.
 
 1. Open the `.dmg` and drag the openLab app onto the Applications shortcut in the window. Eject the disk image.
-2. Open Applications and double-click openLab. macOS says it cannot verify that the app is free of malware (the wording varies by version); choose Done (or OK). Do not choose Move to Bin.
+2. Open Applications and double-click openLab. macOS says it cannot verify that the app is free of malware (the wording varies by version); choose Done (or OK). Do not choose Move to Trash (Move to Bin in some languages).
 3. Allow it, by the route your macOS offers:
    - macOS 12 to 14: right-click (or Control-click) the app, choose Open, then Open again in the box that appears.
-   - macOS 15 and later (including macOS 26): that box has no Open button. Open System Settings, then Privacy & Security, scroll down to Security, choose Open Anyway next to the message about openLab, enter your password when asked, then choose Open Anyway once more. This is the only route on these versions, and the message appears only after step 2.
+   - macOS 15 and later (including macOS 26): that box has no Open button. Open System Settings, then Privacy & Security, scroll down to Security, choose Open Anyway next to the message about openLab, enter your password when asked, then choose Open Anyway once more. This is the only route on these versions. The message appears only after step 2 and stays for about an hour; if it is gone, repeat step 2.
 4. From then on openLab opens with a normal double-click. Each new version you download needs these steps once more.
 
 The disk image also holds the GPL licence and the notices for the third-party components openLab includes (`THIRD-PARTY-NOTICES.txt`, regenerated with `scripts/third-party-notices.py generate`).
