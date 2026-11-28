@@ -520,7 +520,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         holdCheck.isHidden = media == .sound
         // A still's tab is its fades alone, typed: nothing else on it applies to a picture with no length.
         for v in timelineViews { v.isHidden = still }
-        fadeCheck.isHidden = still
+        // A still keeps the built-in fades box with its curve pop-up, as a movie has; its lengths are typed below.
         stillFadeRow.isHidden = !still
         holdCheck.state = holdsAtEnd ? .on : .off
         waveform.silent = silent
@@ -652,7 +652,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         addSliceButton.isEnabled = !off && (waveform.insertion != nil || waveform.selection != nil)
         // A selected section puts a marker on each edge: the button says so.
         addSliceButton.title = loc(waveform.selection != nil ? "timeLoops.addSlices" : "timeLoops.addSlice")
-        fadeCheck.isEnabled = !off
+        fadeCheck.isEnabled = !isLocked
         fadeCurvePopup.isEnabled = !isLocked && hasFades
         holdCheck.isEnabled = !off
         if isLocked { endSliceCountEdit() }

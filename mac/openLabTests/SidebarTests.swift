@@ -269,6 +269,18 @@ final class SidebarTests: XCTestCase {
         XCTAssertGreaterThan(name.frame.width, 40)
     }
 
+    /// New List belongs to the Cue Lists tab: the Active Cues tab does not draw it, and it is back on return.
+    func testNewListIsDrawnOnTheCueListsTabOnly() async throws {
+        let wired = try await Rig.open()
+        side = SidebarViewController(store: wired.store, activeTable: spy)
+        side.view.frame = NSRect(x: 0, y: 0, width: 280, height: 600)
+        XCTAssertFalse(side.newListButton.isHiddenOrHasHiddenAncestor)
+        side.showTab(1)
+        XCTAssertTrue(side.newListButton.isHiddenOrHasHiddenAncestor, "not on Active Cues")
+        side.showTab(0)
+        XCTAssertFalse(side.newListButton.isHiddenOrHasHiddenAncestor, "back on Cue Lists")
+    }
+
     /// CL-01: New List asks the engine for an empty list after the last one and shows it once the
     /// engine has accepted; there is no New Cart button.
     func testNewListAddsAnEmptyListAtTheEndAndShowsIt() async throws {

@@ -42,7 +42,20 @@ extension InspectorViewController {
         }
         let item = NSTabViewItem(identifier: "network")
         item.label = loc("inspector.tab.network")
-        item.view = content
+        // The tab view sizes its item's view by frame; a stack view given that frame keeps its own fitted
+        // width until the next resize, so the area sat small. A plain container takes the frame and
+        // the stack is pinned to its edges.
+        let container = NSView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            content.topAnchor.constraint(equalTo: container.topAnchor),
+            // Pinned at the bottom too: the message area takes the tab's height under the patch row, as QLab's.
+            content.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        item.view = container
         return item
     }
 

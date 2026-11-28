@@ -10,9 +10,16 @@ final class WarningCell: NSTableCellView {
     let title = NSTextField(wrappingLabelWithString: "")
     let detail = NSTextField(wrappingLabelWithString: "")
     let relinkButton = NSButton(title: loc("warnings.relink"), target: nil, action: nil)
-    private let marker = NSImageView(image: WarningCell.markerImage)
+    let marker = NSImageView(image: WarningCell.markerImage)
 
     private static let markerImage = Icon.warningMarker.image(loc("warnings.marker"), compact: true)
+    private static let brokenImage = Icon.stateBroken.image(loc("cue.state.broken"), compact: true)
+
+    /// A broken cue is marked with the red cross its list row has; a notice with the caution mark.
+    func setBroken(_ broken: Bool) {
+        marker.image = broken ? Self.brokenImage : Self.markerImage
+        marker.contentTintColor = broken ? .systemRed : MarkColour.caution
+    }
     private static let titleFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
     private static let detailFont = NSFont.systemFont(ofSize: 11)
     private static let inset: CGFloat = 6

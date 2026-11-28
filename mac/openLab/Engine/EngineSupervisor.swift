@@ -385,10 +385,22 @@ final class EngineSupervisor {
         return !processes.isEngine(pid)
     }
 
+    /// Why the engine program did not start, in words, with the system's code as the detail.
+    static func spawnFailedText(_ code: Int32) -> String {
+        let cause: String
+        switch code {
+        case ENOENT: cause = loc("engine.alarm.spawnCause.missing")
+        case EACCES, EPERM: cause = loc("engine.alarm.spawnCause.denied")
+        case ENOMEM, EAGAIN: cause = loc("engine.alarm.spawnCause.resources")
+        default: cause = loc("engine.alarm.spawnCause.other")
+        }
+        return String(format: loc("engine.alarm.spawnFailed"), cause, String(code))
+    }
+
     private static func describe(_ error: Error) -> String {
         switch error as? EngineSpawnError {
         case .missingExecutable(let path)?: return String(format: loc("engine.alarm.missing"), path)
-        case .spawnFailed(let code)?: return String(format: loc("engine.alarm.spawnFailed"), String(code))
+        case .spawnFailed(let code)?: return spawnFailedText(code)
         case nil: return loc("error.detail.generic")
         }
     }

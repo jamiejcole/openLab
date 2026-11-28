@@ -1354,7 +1354,11 @@
 "engine.alarm.unkillable" = "An engine that does not answer could not be ended. Restart the computer.";
 "engine.alarm.startTimeout" = "The engine did not start in time. openLab is ending it and trying again.";
 "engine.alarm.missing" = "The engine program is missing: %@. Reinstall openLab.";
-"engine.alarm.spawnFailed" = "The engine program could not be started (error %@). Quit openLab and open it again.";
+"engine.alarm.spawnFailed" = "The engine program could not be started: %1$@ (error %2$@). Quit openLab and open it again.";
+"engine.alarm.spawnCause.missing" = "the program is not where openLab expects it";
+"engine.alarm.spawnCause.denied" = "this Mac does not allow it to run";
+"engine.alarm.spawnCause.resources" = "the Mac is short of memory or processes";
+"engine.alarm.spawnCause.other" = "the system refused to run it";
 "engine.reattach.reopened" = "The engine was restarted: this workspace was reopened from its file.";
 "engine.reattach.restored" = "The engine was restarted: this workspace was reopened from its autosave. Edits after the last autosave are lost.";
 "engine.reattach.editsLost" = "The engine was restarted: this workspace was reopened from its file. Its unsaved edits were not in that file. An earlier autosave of it, if one was kept, is offered by the engine alarm and in File > Recover Autosaves.";

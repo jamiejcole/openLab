@@ -2026,8 +2026,11 @@ final class EngineCrashFlowTests: XCTestCase {
         // computer, and a spawn error says to quit and reopen.
         let reasons = [
             loc("engine.alarm.crashLoop"), loc("engine.alarm.unkillable"),
-            String(format: loc("engine.alarm.spawnFailed"), "2"),
+            EngineSupervisor.spawnFailedText(ENOENT),
         ]
+        XCTAssertTrue(
+            reasons[2].contains(loc("engine.alarm.spawnCause.missing")), "the cause is in words: \(reasons[2])")
+        XCTAssertTrue(reasons[2].contains("(error 2)"), "the code stays as the detail")
         for reason in reasons {
             supervisor.alarms.send(.cannotStart(reason))
             let shown = launcherTexts(root)

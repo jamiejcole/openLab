@@ -142,6 +142,8 @@ struct WarningRow: Hashable {
     let canRelink: Bool
     /// The inspector tab that holds what to fix (`basics`: the file and the target are chosen there).
     var inspectorTab: String?
+    /// The row is a broken cue, marked as the cue list marks it (a red cross), not as a notice.
+    var broken = false
 }
 
 enum WarningRows {
@@ -212,7 +214,9 @@ enum WarningRows {
                             title: cueTitle(cue, name: model?.listName(cue) ?? CueKindStyle.kindLabel(cue.kindType)),
                             detail: reasons.joined(separator: "\n"),
                             canRelink: problems.contains { $0.type == "media_missing" },
-                            inspectorTab: problems.contains { basicsProblems.contains($0.type) } ? "basics" : nil))
+                            inspectorTab: problems.contains { basicsProblems.contains($0.type) } ? "basics" : nil,
+                            // A cue paused by a lost device reads paused in the list, so its mark is not the cross.
+                            broken: run?.state != .paused))
                 }
                 walk(cue.children)
             }

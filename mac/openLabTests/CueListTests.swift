@@ -5690,7 +5690,7 @@ final class CueListDrawingTests: XCTestCase {
             return (try? self.drawnMark(h, net, 2))?.icon == .outputOverridden
         }
         XCTAssertEqual(try drawnMark(h, net, 2)?.colour, .systemRed, "output-overridden is red")
-        // A warning is yellow in the Warnings list: the mark drawn on Radio's row (the engine reports it broken).
+        // A broken cue is red in the Warnings list, as on its list row: the mark drawn on Radio's row.
         let page = WarningsPageController(store: h.store)
         page.show(WarningRows.make(store: h.store))
         page.window?.contentView?.layoutSubtreeIfNeeded()
@@ -5700,7 +5700,7 @@ final class CueListDrawingTests: XCTestCase {
         let marker = try XCTUnwrap(cell.subviews.compactMap { $0 as? NSImageView }.first, "the row has its mark")
         XCTAssertFalse(marker.isHidden)
         XCTAssertNotNil(marker.image)
-        XCTAssertEqual(marker.contentTintColor, MarkColour.caution, "a warning is yellow")
+        XCTAssertEqual(marker.contentTintColor, .systemRed, "a broken cue is red")
         guard case .success = await h.store.transport(.start(cue: H.intro)) else { return XCTFail("start") }
         try await h.rig.advance(0.2)
         await assertEventually { (try? self.drawnMark(h, H.intro, 1))?.icon == .stateRunning }

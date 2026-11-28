@@ -217,6 +217,30 @@ fn a_cue_that_fails_is_logged_as_an_error_with_its_reason() {
 }
 
 #[test]
+fn a_go_on_a_broken_cue_is_logged_as_a_sentence_naming_the_cue() {
+    let path = wav(&dc(2000, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0)]);
+    let (mut c, _) = timed(&ws);
+    c.prime_cues = 0;
+    let mut s = show_with(ws, c);
+    std::fs::remove_file(&path).unwrap();
+    go(&mut s);
+    s.run(1500);
+    // Starting it again: a broken cue is not started, and the engine warns.
+    s.transport(TransportAction::Start { cue: id(1) });
+    let log = events(&mut s);
+    let warn = log
+        .iter()
+        .find(|e| e.level == LogLevel::Warn && e.kind == LogKind::Engine)
+        .unwrap_or_else(|| panic!("{log:#?}"));
+    assert_eq!(warn.cue, Some(id(1)));
+    assert_eq!(
+        warn.message,
+        "cue 1 \"cue 1\" is broken and was not started"
+    );
+}
+
+#[test]
 fn engine_warnings_and_errors_are_logged_and_still_broadcast() {
     let ws = workspace(vec![]);
     let (c, _) = timed(&ws);
